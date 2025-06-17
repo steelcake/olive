@@ -1,0 +1,25 @@
+.{
+    .name = .olive,
+    .version = "0.0.0",
+    .fingerprint = 0xaf0be4322c7292de, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.0-dev.822+dd75e7bcb",
+    .dependencies = .{
+        .filterz = .{
+            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.3.tar.gz",
+            .hash = "filterz-0.0.3-n5a112y7AAB97Qi9SGSwmcx5hs8bCSrj70zaKng1KOVS",
+        },
+        .zstd = .{
+            .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
+            .hash = "zstd-1.5.7-KEItkJ8vAAC5_rRlKmLflYQ-eKXbAIQBWZNmmJtS18q0",
+        },
+        .lz4 = .{
+            .url = "https://github.com/allyourcodebase/lz4/archive/refs/tags/1.10.0-5.tar.gz",
+            .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
