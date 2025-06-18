@@ -1,5 +1,6 @@
 const std = @import("std");
 const xorf = @import("filterz").xorf;
+const arrow = @import("arrow");
 
 extern fn ZSTD_versionNumber() callconv(.C) c_uint;
 extern fn LZ4_versionNumber() callconv(.C) c_int;

@@ -19,6 +19,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const arrow = b.dependency("arrow", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("olive", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -26,6 +31,7 @@ pub fn build(b: *std.Build) void {
     mod.addImport("filterz", filterz.module("filterz"));
     mod.linkLibrary(zstd.artifact("zstd"));
     mod.linkLibrary(lz4.artifact("lz4"));
+    mod.addImport("arrow", arrow.module("arrow"));
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
