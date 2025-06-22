@@ -5,7 +5,7 @@ const DataType = arrow.data_type.DataType;
 pub const Schema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
-    dict_indices: []const u8,
+    dict_indices: []const ?u8,
 };
 
 pub const Chunk = struct {

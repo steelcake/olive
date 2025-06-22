@@ -16,14 +16,20 @@ pub const RowRange = struct {
 };
 
 pub const Page = struct {
+    /// Offset of the page start inside the data section of file
     offset: u32,
+    /// Uncompressed size of the page
     size: u32,
+    /// Compressed size of the page, null if not compressed
     compressed_size: ?u32,
 };
 
 pub const Buffer = struct {
     pages: []Page,
+    /// Row range and min_max of each page
     row_ranges: []RowRange,
+    /// Compression used for all pages inside this buffer
+    compression: Compression,
 };
 
 pub const Array = struct {
@@ -33,7 +39,7 @@ pub const Array = struct {
 
 pub const Table = struct {
     fields: []Array,
-    dict_indices: []u8,
+    dict_indices: []?u8,
 };
 
 pub const Filter = struct {
@@ -47,7 +53,6 @@ pub const Dict = struct {
 };
 
 pub const Header = struct {
-    data_section_size: u32,
     tables: []Table,
     dicts: []Dict,
 };
