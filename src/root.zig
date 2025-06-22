@@ -2,22 +2,40 @@ const std = @import("std");
 const xorf = @import("filterz").xorf;
 const arrow = @import("arrow");
 
-extern fn ZSTD_versionNumber() callconv(.C) c_uint;
-extern fn LZ4_versionNumber() callconv(.C) c_int;
+pub const write = @import("./write.zig");
+pub const chunk = @import("./chunk.zig");
 
-test "fa" {
-    const alloc = std.testing.allocator;
-    const keys: []const u64 = &.{ 1, 2, 3, 4, 5 };
-    const arity = 3;
-    const Fingerprint = u16;
-    var header = xorf.calculate_header(arity, @intCast(keys.len));
-    const fingerprints = try alloc.alloc(Fingerprint, header.array_length);
-    defer alloc.free(fingerprints);
-    try xorf.construct_fingerprints(Fingerprint, arity, fingerprints, alloc, keys, &header);
+pub const Header = struct {};
 
-    std.log.warn("{any}", .{fingerprints});
+pub const DataType = union(enum) {};
 
-    std.log.warn("{d}", .{ZSTD_versionNumber()});
+pub const IndexType = enum {
+    xorf,
+    minmax,
+};
 
-    std.log.warn("{d}", .{LZ4_versionNumber()});
-}
+pub const Compression = enum {};
+
+pub const Field = struct {
+    name: [:0]const u8,
+    data_type: DataType,
+    dict_index: u8,
+    indices: []IndexType,
+};
+
+pub const Schema = struct {
+    fields: []const Field,
+};
+
+pub const Table = struct {
+    schema: Schema,
+    data: arrow.array.StructArray,
+};
+
+pub const Dict = struct {};
+
+pub const Chunk = struct {
+    table_names: [:0]const u8,
+    tables: []const Table,
+    dicts: []const Dict,
+};
