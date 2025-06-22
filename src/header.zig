@@ -36,6 +36,8 @@ pub const Buffer = struct {
     compression: Compression,
 };
 
+/// This structure follows the same pattern as Arrow arrays.
+/// If not sure what the buffers/children for a specific array are, check the Arrow Spec.
 pub const Array = struct {
     buffers: []Buffer,
     children: []Array,

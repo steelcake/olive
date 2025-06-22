@@ -25,17 +25,107 @@ pub const CreateHeader = struct {
     alloc: Allocator,
     scratch_alloc: Allocator,
     page_size_kb: ?u32 = null,
-    dict_filters: bool = false,
 };
 
-/// Calculate `header.Array` for flat arrays with fixed size elements e.g. integers, fixed_sized_binary.
-fn create_array_header_for_fixed_size(comptime bytes_per_element: comptime_int, has_validity: bool, array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+/// Create buffer header for variable sized buffer e.g. values buffer of BinaryArray
+fn create_var_buffer_header(comptime index_t: arr.IndexType, offsets: []const index_t.to_type(), array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Buffer {
+    std.debug.assert(offsets.len == array_len + 1);
+
+    const num_pages = if (page_size_kb) |ps| ps_calc: {
+        var num_pages: u32 = 0;
+        var current_page_len: u32 = 0;
+        for (0..array_len) |i| {
+            const start = offsets[i];
+            const end = offsets[i + 1];
+            const len = end - start;
+            current_page_len += len;
+
+            if (current_page_len >= ps) {
+                num_pages += 1;
+                current_page_len = 0;
+            }
+        }
+
+        if (current_page_len > 0) {
+            num_pages += 1;
+        }
+
+        break :ps_calc num_pages;
+    } else 1;
+
+    const pages = try alloc.alloc(header.Page, num_pages);
+    const row_ranges = try alloc.alloc(header.RowRange, num_pages);
+
+    if (page_size_kb) |ps| {
+        var current_page_len: u32 = 0;
+        var current_page_from_idx: u32 = 0;
+        var current_page_idx: u32 = 0;
+        for (0..array_len) |i| {
+            const start = offsets[i];
+            const end = offsets[i + 1];
+            const len = end - start;
+            current_page_len += len;
+
+            if (current_page_len >= ps) {
+                pages[current_page_idx] = .{
+                    .offset = 0,
+                    .size = current_page_len,
+                    .compressed_size = 0,
+                };
+                row_ranges[current_page_idx] = .{
+                    .from_idx = current_page_from_idx,
+                    .to_idx = current_page_idx + 1,
+                    .min = &.{},
+                    .max = &.{},
+                };
+
+                current_page_len = 0;
+                current_page_from_idx = current_page_idx + 1;
+                current_page_idx += 1;
+            }
+        }
+
+        if (current_page_len > 0) {
+            pages[current_page_idx] = .{
+                .offset = 0,
+                .size = current_page_len,
+                .compressed_size = 0,
+            };
+            row_ranges[current_page_idx] = .{
+                .from_idx = current_page_from_idx,
+                .to_idx = current_page_idx + 1,
+                .min = &.{},
+                .max = &.{},
+            };
+        }
+    } else {
+        pages[0] = .{
+            .offset = 0,
+            .size = offsets[array_len],
+            .compressed_size = 0,
+        };
+        row_ranges[0] = .{
+            .from_idx = 0,
+            .to_idx = array_len,
+            .min = &.{},
+            .max = &.{},
+        };
+    }
+
+    return .{
+        .pages = pages,
+        .row_ranges = row_ranges,
+        .compression = .no_compression,
+    };
+}
+
+fn create_buffer_header(bytes_per_element: u32, buffer_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Buffer {
     const num_pages = if (page_size_kb) |ps| ps_calc: {
         std.debug.assert(ps != 0);
 
         const ps_bytes = ps * 1024;
 
-        const n_pages = ((array_len * bytes_per_element) + ps_bytes - 1) / ps_bytes;
+        const n_pages = (bytes_per_element * buffer_len + ps_bytes - 1) / ps_bytes;
 
         break :ps_calc n_pages;
     } else 1;
@@ -44,18 +134,18 @@ fn create_array_header_for_fixed_size(comptime bytes_per_element: comptime_int, 
     const row_ranges = try alloc.alloc(header.RowRange, num_pages);
 
     for (0..num_pages) |page_index| {
-        const page_size = (array_len * bytes_per_element + num_pages - 1) / num_pages;
+        const page_size = (bytes_per_element * buffer_len + num_pages - 1) / num_pages;
 
         pages[page_index] = .{
             .offset = 0,
             .size = page_size,
-            .compressed_size = null,
+            .compressed_size = 0,
         };
 
-        const elements_per_page = (array_len + num_pages - 1) / num_pages;
+        const elements_per_page = (buffer_len + num_pages - 1) / num_pages;
 
         const from_idx = page_index * elements_per_page;
-        const to_idx = @min(array_len, from_idx + elements_per_page);
+        const to_idx = @min(buffer_len, from_idx + elements_per_page);
 
         row_ranges[page_index] = .{
             .from_idx = from_idx,
@@ -65,22 +155,41 @@ fn create_array_header_for_fixed_size(comptime bytes_per_element: comptime_int, 
         };
     }
 
-    const buffers = try alloc.alloc(header.Buffer, 2);
-    buffers[1] = .{
+    return .{
         .pages = pages,
         .row_ranges = row_ranges,
         .compression = .no_compression,
     };
+}
 
+fn create_buffer_header_for_validity(array_len: u32, alloc: Allocator) Error!header.Array {
+    const validity_pages = try alloc.alloc(header.Page, 1);
+    const validity_row_ranges = try alloc.alloc(header.RowRange, 1);
+
+    validity_pages[0] = .{
+        .offset = 0,
+        .size = (array_len + 8 - 1) / 8,
+        .compressed_size = 0,
+    };
+    validity_row_ranges[0] = .{
+        .from_idx = 0,
+        .to_idx = array_len,
+        .min = &.{},
+        .max = &.{},
+    };
+
+    return .{
+        .pages = validity_pages,
+        .row_ranges = validity_row_ranges,
+        .compression = .no_compression,
+    };
+}
+
+/// Calculate `header.Array` for flat arrays with fixed size elements e.g. integers, fixed_sized_binary.
+fn create_array_header_for_fixed_size(bytes_per_element: u32, has_validity: bool, array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 2);
     if (has_validity) {
-        const validity_pages = try alloc.alloc(header.Page, 1);
-        const validity_row_ranges = try alloc.alloc(header.RowRange, 1);
-
-        buffers[0] = .{
-            .pages = validity_pages,
-            .row_ranges = validity_row_ranges,
-            .compression = .no_compression,
-        };
+        buffers[0] = try create_buffer_header_for_validity(array_len, alloc);
     } else {
         buffers[0] = .{
             .pages = &.{},
@@ -88,6 +197,31 @@ fn create_array_header_for_fixed_size(comptime bytes_per_element: comptime_int, 
             .compression = .no_compression,
         };
     }
+    buffers[1] = try create_buffer_header(bytes_per_element, array_len, alloc, page_size_kb);
+
+    return .{
+        .children = &.{},
+        .buffers = buffers,
+    };
+}
+
+fn create_binary_array_header(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t), alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 3);
+    if (array.validity != null) {
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc);
+    } else {
+        buffers[0] = .{
+            .pages = &.{},
+            .row_ranges = &.{},
+            .compression = .no_compression,
+        };
+    }
+    const bytes_per_element = switch (index_t) {
+        .i32 => @sizeOf(i32),
+        .i64 => @sizeOf(i64),
+    };
+    buffers[1] = try create_buffer_header(bytes_per_element, array.len, alloc, page_size_kb);
+    buffers[2] = try create_var_buffer_header(index_t, array.offsets[array.offset .. array.offset + array.len + 1], array.len, alloc, page_size_kb);
 
     return .{
         .children = &.{},
@@ -97,7 +231,57 @@ fn create_array_header_for_fixed_size(comptime bytes_per_element: comptime_int, 
 
 /// Calculate `header.Array` based on given arrow array.
 /// Splits into pages and calculates maximum size of pages.
-fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {}
+fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    switch (array.*) {
+        .null => |_| return .{ .children = &.{}, .buffers = &.{} },
+        .i8 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i8), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .i16 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i16), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .i32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .i64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .u8 => |*a| return try create_array_header_for_fixed_size(@sizeOf(u8), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .u16 => |*a| return try create_array_header_for_fixed_size(@sizeOf(u16), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .u32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(u32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .u64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(u64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .f16 => |*a| return try create_array_header_for_fixed_size(@sizeOf(f16), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .f32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(f32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .f64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(f64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .binary => |*a| return try create_binary_array_header(.i32, a, alloc, page_size_kb),
+        .utf8 => |*a| return try create_binary_array_header(.i32, &a.inner, alloc, page_size_kb),
+        .bool => |*a| return try create_array_header_for_fixed_size(1, a.validity != null, (arrow.length.length(array) + 8 - 1) / 8, alloc, page_size_kb),
+        .decimal32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .decimal64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .decimal128 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i128), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .decimal256 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i256), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .date32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .date64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .time32 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .time64 => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .timestamp => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .interval_year_month => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .interval_day_time => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32) * 2, a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .interval_month_day_nano => |*a| return try create_array_header_for_fixed_size(@sizeOf(arr.MonthDayNano), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        // list: ListArray,
+        // struct_: StructArray,
+        // dense_union: DenseUnionArray,
+        // sparse_union: SparseUnionArray,
+        // fixed_size_binary: FixedSizeBinaryArray,
+        // fixed_size_list: FixedSizeListArray,
+        // map: MapArray,
+        // duration: DurationArray,
+        // large_binary: LargeBinaryArray,
+        // large_utf8: LargeUtf8Array,
+        // large_list: LargeListArray,
+        // run_end_encoded: RunEndArray,
+        // binary_view: BinaryViewArray,
+        // utf8_view: Utf8ViewArray,
+        // list_view: ListViewArray,
+        // large_list_view: LargeListViewArray,
+        // dict: DictArray,
+        //
+        // TODO: remove this
+        else => unreachable,
+    }
+}
 
 pub fn create_header(params: CreateHeader) Error!header.Header {
     const tables = try params.alloc.alloc(header.Table, params.chunk.tables.len);
@@ -133,7 +317,9 @@ pub const Write = struct {
     chunk: *const chunk.Chunk,
     header: *header.Header,
     buffer: []u8,
-    filter_alloc: Allocator,
+    /// Pass null if constructing xor filters based on dictionaries is not wanted.
+    filter_alloc: ?Allocator,
+    scratch_alloc: Allocator,
 };
 
 pub fn write(_: Write) Error!void {}
