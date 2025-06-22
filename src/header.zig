@@ -9,9 +9,13 @@ pub const Compression = enum {
 };
 
 pub const RowRange = struct {
+    /// The row index that the page starts from inside an array (Buffer). Inclusive
     from_idx: u32,
+    /// The row index that the page ends at inside an array (Buffer). Exclusive
     to_idx: u32,
+    /// Minimum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
     min: []u8,
+    /// Maximum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
     max: []u8,
 };
 
@@ -20,8 +24,8 @@ pub const Page = struct {
     offset: u32,
     /// Uncompressed size of the page
     size: u32,
-    /// Compressed size of the page, null if not compressed
-    compressed_size: ?u32,
+    /// Compressed size of the page, 0 if not compressed
+    compressed_size: u32,
 };
 
 pub const Buffer = struct {
