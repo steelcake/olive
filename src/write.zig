@@ -24,13 +24,6 @@ fn maybe_byte_swap(val: anytype) @TypeOf(val) {
     };
 }
 
-pub const CreateHeader = struct {
-    chunk: *const chunk.Chunk,
-    alloc: Allocator,
-    scratch_alloc: Allocator,
-    page_size_kb: ?u32 = null,
-};
-
 /// Create buffer header for variable sized buffer e.g. values buffer of BinaryArray
 fn create_var_buffer_header(comptime index_t: arr.IndexType, offsets: []const index_t.to_type(), array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Buffer {
     std.debug.assert(offsets.len == array_len + 1);
@@ -394,11 +387,19 @@ fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: 
     }
 }
 
-pub fn create_header(params: CreateHeader) Error!header.Header {
-    const tables = try params.alloc.alloc(header.Table, params.chunk.tables.len);
+pub const CreateHeader = struct {
+    tables: []const arr.StructArray,
+    table_schemas: []const chunk.Schema,
+    alloc: Allocator,
+    scratch_alloc: Allocator,
+    page_size_kb: ?u32 = null,
+};
 
-    std.debug.assert(params.chunk.tables.len == params.chunk.table_schemas.len);
-    for (params.chunk.tables, params.chunk.table_schemas, 0..) |table, schema, table_index| {
+pub fn create_header(params: CreateHeader) Error!header.Header {
+    const tables = try params.alloc.alloc(header.Table, params.tables.len);
+
+    std.debug.assert(params.tables.len == params.table_schemas.len);
+    for (params.tables, params.table_schemas, 0..) |table, schema, table_index| {
         const fields = try params.alloc.alloc(header.Array, table.field_names.len);
         const dict_indices = try params.alloc.alloc(?u8, table.field_names.len);
 
@@ -424,16 +425,27 @@ pub fn create_header(params: CreateHeader) Error!header.Header {
     };
 }
 
+/// Calculates needed buffer_size to store all buffers of given header
+// pub fn calculate_buffer_size(head: *const header.Header) u32 {
+//     var size: u32 = 0;
+//     return size;
+// }
+
 pub const Write = struct {
-    chunk: *const chunk.Chunk,
+    tables: []const arr.StructArray,
+    table_schemas: []const chunk.Schema,
     header: *header.Header,
     buffer: []u8,
+    /// Allocator to be used to store minmax value indices
+    minmax_alloc: ?Allocator,
     /// Pass null if constructing xor filters based on dictionaries is not wanted.
     filter_alloc: ?Allocator,
     scratch_alloc: Allocator,
 };
 
-pub fn write(_: Write) Error!void {}
+pub fn write(params: Write) Error!void {
+    std.debug.assert(params.tables.len == params.table_schemas.len);
+}
 
 /// Convert the element at index into a binary blob value allocated using the given alloc
 fn array_elem_as_bytes_primitive(comptime T: type, array: *const arr.PrimitiveArray(T), index: u32, alloc: Allocator) Error![]u8 {

@@ -19,28 +19,27 @@ pub const RowRange = struct {
     max: []u8,
 };
 
-pub const Page = struct {
+pub const Buffer = struct {
     /// Offset of the page start inside the data section of file
     offset: u32,
     /// Uncompressed size of the page
     size: u32,
     /// Compressed size of the page, 0 if not compressed
     compressed_size: u32,
-};
-
-pub const Buffer = struct {
-    pages: []Page,
-    /// Row range and min_max of each page
-    row_ranges: []RowRange,
-    /// Compression used for all pages inside this buffer
     compression: Compression,
 };
 
-/// This structure follows the same pattern as Arrow arrays.
-/// If not sure what the buffers/children for a specific array are, check the Arrow Spec.
-pub const Array = struct {
+/// A page is like a section of an array.
+/// If the array is nested the page will be nested as well and contain only the relevant parts of the children.
+/// All offsets etc. will be adjusted when writing so all offsets in a page makes sense by itself after loading from file.
+pub const Page = struct {
     buffers: []Buffer,
-    children: []Array,
+    children: []Page,
+};
+
+pub const Array = struct {
+    pages: []Page,
+    row_ranges: []RowRange,
 };
 
 pub const Table = struct {
