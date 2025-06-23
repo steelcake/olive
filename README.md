@@ -1,6 +1,6 @@
 # olive
 
-Arrow based, columnar file format for blockchain data
+Arrow based, columnar file format.
 
 ## License
 
