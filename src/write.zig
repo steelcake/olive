@@ -10,6 +10,8 @@ const header = @import("./header.zig");
 pub const Error = error{
     UnsupportedTypeForMinMax,
     OutOfMemory,
+    DictArrayNotSupported,
+    RunEndEncodedArrayNotSupported,
 };
 
 /// Swap bytes of integer if target is big endian
@@ -162,34 +164,15 @@ fn create_buffer_header(bytes_per_element: u32, buffer_len: u32, alloc: Allocato
     };
 }
 
-fn create_buffer_header_for_validity(array_len: u32, alloc: Allocator) Error!header.Array {
-    const validity_pages = try alloc.alloc(header.Page, 1);
-    const validity_row_ranges = try alloc.alloc(header.RowRange, 1);
-
-    validity_pages[0] = .{
-        .offset = 0,
-        .size = (array_len + 8 - 1) / 8,
-        .compressed_size = 0,
-    };
-    validity_row_ranges[0] = .{
-        .from_idx = 0,
-        .to_idx = array_len,
-        .min = &.{},
-        .max = &.{},
-    };
-
-    return .{
-        .pages = validity_pages,
-        .row_ranges = validity_row_ranges,
-        .compression = .no_compression,
-    };
+fn create_buffer_header_for_validity(array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Buffer {
+    return create_buffer_header(1, (array_len + 8 - 1) / 8, alloc, page_size_kb);
 }
 
 /// Calculate `header.Array` for flat arrays with fixed size elements e.g. integers, fixed_sized_binary.
 fn create_array_header_for_fixed_size(bytes_per_element: u32, has_validity: bool, array_len: u32, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
     const buffers = try alloc.alloc(header.Buffer, 2);
     if (has_validity) {
-        buffers[0] = try create_buffer_header_for_validity(array_len, alloc);
+        buffers[0] = try create_buffer_header_for_validity(array_len, alloc, page_size_kb);
     } else {
         buffers[0] = .{
             .pages = &.{},
@@ -208,7 +191,7 @@ fn create_array_header_for_fixed_size(bytes_per_element: u32, has_validity: bool
 fn create_binary_array_header(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t), alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
     const buffers = try alloc.alloc(header.Buffer, 3);
     if (array.validity != null) {
-        buffers[0] = try create_buffer_header_for_validity(array.len, alloc);
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc, page_size_kb);
     } else {
         buffers[0] = .{
             .pages = &.{},
@@ -225,6 +208,113 @@ fn create_binary_array_header(comptime index_t: arr.IndexType, array: *const arr
 
     return .{
         .children = &.{},
+        .buffers = buffers,
+    };
+}
+
+fn create_list_array_header(comptime index_t: arr.IndexType, array: *const arr.GenericListArray(index_t), alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 2);
+    if (array.validity != null) {
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc, page_size_kb);
+    } else {
+        buffers[0] = .{
+            .pages = &.{},
+            .row_ranges = &.{},
+            .compression = .no_compression,
+        };
+    }
+    const bytes_per_element = switch (index_t) {
+        .i32 => @sizeOf(i32),
+        .i64 => @sizeOf(i64),
+    };
+    buffers[1] = try create_buffer_header(bytes_per_element, array.len, alloc, page_size_kb);
+
+    const children = try alloc.alloc(header.Array, 1);
+    children[0] = try create_array_header(&array.inner, alloc, page_size_kb);
+
+    return .{
+        .children = children,
+        .buffers = buffers,
+    };
+}
+
+fn create_struct_array_header(array: *const arr.StructArray, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 1);
+    if (array.validity != null) {
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc, page_size_kb);
+    } else {
+        buffers[0] = .{
+            .pages = &.{},
+            .row_ranges = &.{},
+            .compression = .no_compression,
+        };
+    }
+
+    const children = try alloc.alloc(header.Array, array.field_names.len);
+
+    for (0..array.field_names.len) |i| {
+        children[i] = try create_array_header(&array.field_values[i], alloc, page_size_kb);
+    }
+
+    return .{
+        .children = children,
+        .buffers = buffers,
+    };
+}
+
+fn create_dense_union_array_header(array: *const arr.DenseUnionArray, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 2);
+    // types buffer
+    buffers[0] = try create_buffer_header(@sizeOf(i8), array.inner.len, alloc, page_size_kb);
+    // offsets buffer
+    buffers[1] = try create_buffer_header(@sizeOf(i32), array.inner.len, alloc, page_size_kb);
+
+    const children = try alloc.alloc(header.Array, array.inner.children.len);
+
+    for (0..array.inner.children.len) |i| {
+        children[i] = try create_array_header(&array.inner.children[i], alloc, page_size_kb);
+    }
+
+    return .{
+        .children = children,
+        .buffers = buffers,
+    };
+}
+
+fn create_sparse_union_array_header(array: *const arr.SparseUnionArray, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 1);
+    // types buffer
+    buffers[0] = try create_buffer_header(@sizeOf(i8), array.inner.len, alloc, page_size_kb);
+
+    const children = try alloc.alloc(header.Array, array.inner.children.len);
+
+    for (0..array.inner.children.len) |i| {
+        children[i] = try create_array_header(&array.inner.children[i], alloc, page_size_kb);
+    }
+
+    return .{
+        .children = children,
+        .buffers = buffers,
+    };
+}
+
+fn create_fixed_size_list_array_header(array: *const arr.FixedSizeListArray, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 1);
+    if (array.validity != null) {
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc, page_size_kb);
+    } else {
+        buffers[0] = .{
+            .pages = &.{},
+            .row_ranges = &.{},
+            .compression = .no_compression,
+        };
+    }
+
+    const children = try alloc.alloc(header.Array, 1);
+    children[0] = try create_array_header(&array.inner, alloc, page_size_kb);
+
+    return .{
+        .children = children,
         .buffers = buffers,
     };
 }
@@ -260,23 +350,23 @@ fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: 
         .interval_year_month => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
         .interval_day_time => |*a| return try create_array_header_for_fixed_size(@sizeOf(i32) * 2, a.validity != null, arrow.length.length(array), alloc, page_size_kb),
         .interval_month_day_nano => |*a| return try create_array_header_for_fixed_size(@sizeOf(arr.MonthDayNano), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
-        // list: ListArray,
-        // struct_: StructArray,
-        // dense_union: DenseUnionArray,
-        // sparse_union: SparseUnionArray,
-        // fixed_size_binary: FixedSizeBinaryArray,
-        // fixed_size_list: FixedSizeListArray,
+        .list => |*a| return try create_list_array_header(.i32, a, alloc, page_size_kb),
+        .struct_ => |*a| return try create_struct_array_header(a, alloc, page_size_kb),
+        .dense_union => |*a| return try create_dense_union_array_header(a, alloc, page_size_kb),
+        .sparse_union => |*a| return try create_sparse_union_array_header(a, alloc, page_size_kb),
+        .fixed_size_binary => |*a| return try create_array_header_for_fixed_size(a.byte_width, a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .fixed_size_list => |*a| return try create_fixed_size_list_array_header(a, alloc, page_size_kb),
         // map: MapArray,
-        // duration: DurationArray,
-        // large_binary: LargeBinaryArray,
-        // large_utf8: LargeUtf8Array,
-        // large_list: LargeListArray,
-        // run_end_encoded: RunEndArray,
+        .duration => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
+        .large_binary => |*a| return try create_binary_array_header(.i64, a, alloc, page_size_kb),
+        .large_utf8 => |*a| return try create_binary_array_header(.i64, &a.inner, alloc, page_size_kb),
+        .large_list => |*a| return try create_list_array_header(.i64, a, alloc, page_size_kb),
+        .run_end_encoded => return Error.RunEndEncodedArrayNotSupported,
         // binary_view: BinaryViewArray,
         // utf8_view: Utf8ViewArray,
         // list_view: ListViewArray,
         // large_list_view: LargeListViewArray,
-        // dict: DictArray,
+        .dict => return Error.DictArrayNotSupported,
         //
         // TODO: remove this
         else => unreachable,
