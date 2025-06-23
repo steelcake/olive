@@ -1,3 +1,5 @@
+const std = @import("std");
+const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
 
 pub const Compression = enum {
@@ -14,9 +16,9 @@ pub const RowRange = struct {
     /// The row index that the page ends at inside an array (Buffer). Exclusive
     to_idx: u32,
     /// Minimum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
-    min: []u8,
+    min: []const u8,
     /// Maximum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
-    max: []u8,
+    max: []const u8,
 };
 
 pub const Buffer = struct {
@@ -29,27 +31,38 @@ pub const Buffer = struct {
     compression: Compression,
 };
 
-/// A page is like a section of an array.
+/// A page is like a section of an array. It is same as the raw representation of an array in arrow spec with array offset removed.
 /// If the array is nested the page will be nested as well and contain only the relevant parts of the children.
 /// All offsets etc. will be adjusted when writing so all offsets in a page makes sense by itself after loading from file.
 pub const Page = struct {
-    buffers: []Buffer,
-    children: []Page,
+    buffers: []const Buffer,
+    children: []const Page,
 };
 
 pub const Array = struct {
-    pages: []Page,
-    row_ranges: []RowRange,
+    pages: []const Page,
+    row_ranges: []const RowRange,
 };
 
 pub const Table = struct {
-    fields: []Array,
-    dict_indices: []?u8,
+    fields: []const Array,
+    dict_indices: []const ?u8,
 };
 
 pub const Filter = struct {
+    const Fingerprint = u16;
+    const arity = 3;
+
     header: xorf.Header,
-    fingerprints: []const u16,
+    fingerprints: []const Fingerprint,
+
+    pub fn hash(key: anytype) u64 {
+        return hash_fn(0, key);
+    }
+
+    pub fn check_hash(self: *const Filter, hash_: u64) bool {
+        return xorf.filter_check(Fingerprint, arity, &self.header, self.fingerprints, hash_);
+    }
 };
 
 pub const Dict = struct {
@@ -58,6 +71,6 @@ pub const Dict = struct {
 };
 
 pub const Header = struct {
-    tables: []Table,
-    dicts: []Dict,
+    tables: []const Table,
+    dicts: []const Dict,
 };

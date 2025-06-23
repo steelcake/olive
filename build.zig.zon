@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.0-dev.822+dd75e7bcb",
     .dependencies = .{
         .filterz = .{
-            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.3.tar.gz",
-            .hash = "filterz-0.0.3-n5a112y7AAB97Qi9SGSwmcx5hs8bCSrj70zaKng1KOVS",
+            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.4.tar.gz",
+            .hash = "filterz-0.0.4-n5a11227AAB0hKcX4g8ZyKAD4fStJd7D8XkGs0o-JGUP",
         },
         .zstd = .{
             .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
@@ -17,8 +17,8 @@
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.4.tar.gz",
-            .hash = "arrow-0.0.4-ZFEaqFORAwC8TNqnwdb_18ciSHVP6jA9OKuCDCB4uf3s",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.5.tar.gz",
+            .hash = "arrow-0.0.5-ZFEaqC_gAwD0DA0soigaAUtx6GNDhZm2zYPRxU9wRDhd",
         },
     },
     .paths = .{
