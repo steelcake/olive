@@ -319,6 +319,28 @@ fn create_fixed_size_list_array_header(array: *const arr.FixedSizeListArray, all
     };
 }
 
+fn create_map_array_header(array: *const arr.MapArray, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
+    const buffers = try alloc.alloc(header.Buffer, 2);
+    if (array.validity != null) {
+        buffers[0] = try create_buffer_header_for_validity(array.len, alloc, page_size_kb);
+    } else {
+        buffers[0] = .{
+            .pages = &.{},
+            .row_ranges = &.{},
+            .compression = .no_compression,
+        };
+    }
+    buffers[1] = try create_buffer_header(@sizeOf(i32), array.len, alloc, page_size_kb);
+
+    const children = try alloc.alloc(header.Array, 1);
+    children[0] = try create_array_header(array.entries, alloc, page_size_kb);
+
+    return .{
+        .children = children,
+        .buffers = buffers,
+    };
+}
+
 /// Calculate `header.Array` based on given arrow array.
 /// Splits into pages and calculates maximum size of pages.
 fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: ?u32) Error!header.Array {
@@ -356,7 +378,7 @@ fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: 
         .sparse_union => |*a| return try create_sparse_union_array_header(a, alloc, page_size_kb),
         .fixed_size_binary => |*a| return try create_array_header_for_fixed_size(a.byte_width, a.validity != null, arrow.length.length(array), alloc, page_size_kb),
         .fixed_size_list => |*a| return try create_fixed_size_list_array_header(a, alloc, page_size_kb),
-        // map: MapArray,
+        .map => |*a| return try create_map_array_header(a, alloc, page_size_kb),
         .duration => |*a| return try create_array_header_for_fixed_size(@sizeOf(i64), a.validity != null, arrow.length.length(array), alloc, page_size_kb),
         .large_binary => |*a| return try create_binary_array_header(.i64, a, alloc, page_size_kb),
         .large_utf8 => |*a| return try create_binary_array_header(.i64, &a.inner, alloc, page_size_kb),
