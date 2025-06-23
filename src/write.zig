@@ -12,6 +12,8 @@ pub const Error = error{
     OutOfMemory,
     DictArrayNotSupported,
     RunEndEncodedArrayNotSupported,
+    BinaryViewArrayNotSupported,
+    ListViewArrayNotSupported,
 };
 
 /// Swap bytes of integer if target is big endian
@@ -384,14 +386,11 @@ fn create_array_header(array: *const arr.Array, alloc: Allocator, page_size_kb: 
         .large_utf8 => |*a| return try create_binary_array_header(.i64, &a.inner, alloc, page_size_kb),
         .large_list => |*a| return try create_list_array_header(.i64, a, alloc, page_size_kb),
         .run_end_encoded => return Error.RunEndEncodedArrayNotSupported,
-        // binary_view: BinaryViewArray,
-        // utf8_view: Utf8ViewArray,
-        // list_view: ListViewArray,
-        // large_list_view: LargeListViewArray,
+        .binary_view => return Error.BinaryViewArrayNotSupported,
+        .utf8_view => return Error.BinaryViewArrayNotSupported,
+        .list_view => return Error.ListViewArrayNotSupported,
+        .large_list_view => return Error.ListViewArrayNotSupported,
         .dict => return Error.DictArrayNotSupported,
-        //
-        // TODO: remove this
-        else => unreachable,
     }
 }
 
