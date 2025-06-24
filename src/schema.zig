@@ -5,11 +5,6 @@ const DataType = arrow.data_type.DataType;
 pub const TableSchema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
-    /// Index of the dictionary the field corresponds to if it is dictionary encoded.
-    /// Multiple fields can be included in a single dictionary.
-    dict_indices: []const ?u8,
-    /// Whether the field at index i has a minmax index or not
-    min_max: []const bool,
 
     pub fn check(self: *const TableSchema, data: *const arrow.array.StructArray) bool {
         std.debug.assert(self.field_names.len == self.data_types.len);
@@ -34,13 +29,30 @@ pub const TableSchema = struct {
     }
 };
 
+pub const DictMember = struct {
+    table_index: u8,
+    field_index: u8,
+};
+
+pub const DictSchema = struct {
+    /// (TableIndex, ColumnIndex) of fields included in this dictionary
+    /// All fields have to be some kind of binary array e.g. FixedSizeBinary/LargeBinary/BinaryView/Utf8
+    members: []const DictMember,
+    /// Whether this dictionary has an accompanying xor filter in the file header
+    has_filter: bool,
+};
+
+pub const ValidationError = error{};
+
 pub const DatasetSchema = struct {
     table_names: []const []const u8,
     tables: []const TableSchema,
-    /// Whether the dictionary at index i has a xor filter
-    /// The length of this slice should be the same as the number of dictionaries that this dataset has
-    dict_has_filter: []const bool,
+    dicts: []const DictSchema,
 
+    /// Validate this schema for any inconsistencies
+    pub fn validate(_: *const DatasetSchema) ValidationError!void {}
+
+    /// Check if given data matches with the schema
     pub fn check(self: *const DatasetSchema, data: []const arrow.array.StructArray) bool {
         std.debug.assert(self.table_names.len == self.tables.len);
 

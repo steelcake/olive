@@ -43,70 +43,31 @@ pub const Write = struct {
 };
 
 pub fn write(params: Write) Error!header.Header {
-    // Construct dictionaries
-    //
-    // Construct Pages/Buffers
-    //
-    //
-    //
-
     var data_section_size: u32 = 0;
 
     const num_dicts = params.chunk.schema.dict_has_filter.len;
     const dicts = try params.header_alloc.alloc(header.Dict, num_dicts);
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.data.len);
 
-    var dict_elems: [][]const u8 = &.{};
-    for (0..num_dicts) |dict_idx| {
+    const dict_elems = try params.scratch_alloc.alloc([]const []const u8, params.chunk.schema.dicts.len);
+
+    for (params.chunk.schema.dicts, 0..) |dict, dict_idx| {
         var num_elems: usize = 0;
 
-        for (params.chunk.schema.tables, params.chunk.data) |sc, arrays| {
-            for (sc.dict_indices, 0..) |field_dict_idx, field_idx| {
-                if (field_dict_idx) |fdi| {
-                    if (fdi == dict_idx) {
-                        num_elems += arrow.length.length(arrays.field_values[field_idx]);
-                    }
-                }
-            }
+        for (dict.members) |member| {
+            num_elems += count_array_to_dict(&params.chunk.data[member.table_index].field_values[member.field_index]);
         }
 
-        dict_elems = if (num_elems > dict_elems) try params.scratch_alloc.realloc(dict_elems, num_elems) else dict_elems;
+        var elems = try params.scratch_alloc.alloc([]const u8, num_elems);
 
         var write_idx: usize = 0;
-        for (params.chunk.schema.tables, params.chunk.data) |sc, arrays| {
-            for (sc.dict_indices, 0..) |field_dict_idx, field_idx| {
-                if (field_dict_idx) |fdi| {
-                    if (fdi == dict_idx) {
-                        switch (arrays.field_values[field_idx]) {
-                            .binary => |*a| {
-                                write_idx = push_binary_to_dict(.i32, a, write_idx, dict_elems);
-                            },
-                            .large_binary => |*a| {
-                                write_idx = push_binary_to_dict(.i64, a, write_idx, dict_elems);
-                            },
-                            .binary_view => |*a| {
-                                write_idx = push_binary_view_to_dict(a, write_idx, dict_elems);
-                            },
-                            .fixed_size_binary => |*a| {
-                                write_idx = push_fixed_size_binary_to_dict(a, write_idx, dict_elems);
-                            },
-                            .utf8 => |*a| {
-                                write_idx = push_binary_to_dict(.i32, &a.inner, write_idx, dict_elems);
-                            },
-                            .large_utf8 => |*a| {
-                                write_idx = push_binary_to_dict(.i64, &a.inner, write_idx, dict_elems);
-                            },
-                            .utf8_view => |*a| {
-                                write_idx = push_binary_view_to_dict(&a.inner, write_idx, dict_elems);
-                            },
-                            else => return Error.NonBinaryArrayWithDict,
-                        }
-                    }
-                }
-            }
+        for (dict.members) |member| {
+            const array = &params.chunk.data[member.table_index].field_values[member.field_index];
+            write_idx = try push_array_to_dict(array, write_idx, elems);
         }
 
-        const dict_data = sort_and_dedup(dict_elems[0..write_idx]);
+        elems = sort_and_dedup(dict_elems[0..write_idx]);
+        dict_elems[dict_idx] = elems;
 
         dicts[dict_idx] = .{};
     }
@@ -117,8 +78,6 @@ pub fn write(params: Write) Error!header.Header {
         .data_section_size = data_section_size,
     };
 }
-
-// fn write_dict_as_array(data: []const []const u8, data_section: )
 
 fn sort_and_dedup(data: [][]const u8) [][]const u8 {
     std.mem.sort([]const u8, data, {}, std.sort.asc([]const u8));
@@ -132,6 +91,60 @@ fn sort_and_dedup(data: [][]const u8) [][]const u8 {
     }
 
     return data[0 .. write_idx + 1];
+}
+
+fn count_array_to_dict(array: *const arr.Array) usize {
+    switch (array.*) {
+        .binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .large_binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .binary_view => |*a| {
+            return a.len - a.null_count;
+        },
+        .fixed_size_binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .utf8 => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        .large_utf8 => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        .utf8_view => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        else => return Error.NonBinaryArrayWithDict,
+    }
+}
+
+fn push_array_to_dict(array: *const arr.Array, write_idx: usize, elems: [][]const u8) Error!usize {
+    switch (array.*) {
+        .binary => |*a| {
+            return push_binary_to_dict(.i32, a, write_idx, elems);
+        },
+        .large_binary => |*a| {
+            return push_binary_to_dict(.i64, a, write_idx, elems);
+        },
+        .binary_view => |*a| {
+            return push_binary_view_to_dict(a, write_idx, elems);
+        },
+        .fixed_size_binary => |*a| {
+            return push_fixed_size_binary_to_dict(a, write_idx, elems);
+        },
+        .utf8 => |*a| {
+            return push_binary_to_dict(.i32, &a.inner, write_idx, elems);
+        },
+        .large_utf8 => |*a| {
+            return push_binary_to_dict(.i64, &a.inner, write_idx, elems);
+        },
+        .utf8_view => |*a| {
+            return push_binary_view_to_dict(&a.inner, write_idx, elems);
+        },
+        else => return Error.NonBinaryArrayWithDict,
+    }
 }
 
 fn push_binary_to_dict(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t), write_idx: usize, out: [][]const u8) usize {

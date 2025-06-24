@@ -10,38 +10,32 @@ pub const Compression = enum {
     int_bit_pack,
 };
 
-pub const RowRange = struct {
-    /// The row index that the page starts from inside an array (Buffer). Inclusive
-    from_idx: u32,
-    /// The row index that the page ends at inside an array (Buffer). Exclusive
-    to_idx: u32,
-    /// Minimum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
-    min: []const u8,
-    /// Maximum value that a page has if the field has a minmax index. Otherwise it should be an empty slice.
-    max: []const u8,
+/// 32 byte prefixes of min/max values a page has.
+/// Integers are encoded as little endian.
+pub const MinMax = struct {
+    min: [32]u8,
+    max: [32]u8,
+};
+
+pub const Page = struct {
+    /// Offset of the page start inside the data section of file
+    offset: u32,
+    uncompressed_size: u32,
+    /// Compressed size of the page, 0 if not compressed
+    compressed_size: u32,
 };
 
 pub const Buffer = struct {
-    /// Offset of the page start inside the data section of file
-    offset: u32,
-    /// Uncompressed size of the page
-    size: u32,
-    /// Compressed size of the page, 0 if not compressed
-    compressed_size: u32,
+    pages: []const Page,
+    minmax: []const MinMax,
+    row_index_ends: []const u32,
     compression: Compression,
 };
 
-/// A page is like a section of an array. It is same as the raw representation of an array in arrow spec with array offset removed.
-/// If the array is nested the page will be nested as well and contain only the relevant parts of the children.
-/// All offsets etc. will be adjusted when writing so all offsets in a page makes sense by itself after loading from file.
-pub const Page = struct {
-    buffers: []const Buffer,
-    children: []const Page,
-};
-
+/// Same layout as described in Arrow Spec
 pub const Array = struct {
-    pages: []const Page,
-    row_ranges: []const RowRange,
+    buffers: []const Buffer,
+    children: []const Array,
 };
 
 pub const Table = struct {
