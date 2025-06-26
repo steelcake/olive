@@ -10,12 +10,6 @@ const header = @import("./header.zig");
 const chunk = @import("./chunk.zig");
 const schema = @import("./schema.zig");
 
-extern fn ZSTD_compress(dst: [*]u8, dst_capacity: usize, src: [*]const u8, src_size: usize, compression_level: c_int) callconv(.C) usize;
-extern fn ZSTD_compressBound(src_size: usize) callconv(.C) usize;
-extern fn ZSTD_isError(code: usize) callconv(.C) c_uint;
-
-extern fn LZ4_compressBound(input_size: c_int) callconv(.C) c_int;
-
 pub const Error = error{
     UnsupportedTypeForMinMax,
     OutOfMemory,
@@ -25,6 +19,8 @@ pub const Error = error{
     ListViewArrayNotSupported,
     DataSectionOverflow,
     NonBinaryArrayWithDict,
+    Lz4CompressionFail,
+    ZstdCompressionFail,
 };
 
 /// Swap bytes of integer if target is big endian
@@ -268,18 +264,41 @@ fn write_page(params: WritePage) Error!void {
     params.data_section_size.* = ds_size + compressed_size;
 }
 
-fn compress_bound(input_size: usize) usize {
-    return @max(ZSTD_compressBound(input_size), LZ4_compressBound(input_size), input_size);
-}
-
 fn compress(src: []const u8, dst: []u8, compression: *?header.Compression) usize {
-    const algo = compression.*;
+    if (src.len == 0) {
+        return 0;
+    }
+
+    const algo: header.Compression = if (compression.*) |alg| 
+        alg
+    else alg_calc: {
+        // Numbers taken from https://github.com/lz4/lz4?tab=readme-ov-file#benchmarks
+        //
+        // decompress speed (MB/s) divided by compressed_size gives us 
+
+    };
 
     if (algo) |a| {
         switch (a) {
-            .lz4 => {},
-            .zstd => {},
-            .no_compression => {},
+            .lz4 => {
+                const res = LZ4_compress_default(src.ptr, dst.ptr, src.len, dst.len);
+                if (res != 0) {
+                    return res;
+                } else {
+                    return Error.Lz4CompressionFail;
+                }
+            },
+            .zstd => {
+                const res = ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, 8);
+                if (ZSTD_isError(res) == 0) {
+                    return res;
+                } else {
+                    return Error.ZstdCompressionFail;
+                }
+            },
+            .no_compression => {
+                return src.len;
+            },
         }
     } else {
         // try all algo and decide
