@@ -78,10 +78,10 @@ pub fn write(params: Write) Error!header.Header {
 
         const dict_array = try arrow.builder.BinaryBuilder.from_slice(elems, false, params.scratch_alloc);
 
-        // const filter = if (dict.has_filter)
-        // else
-        //     null
-        // ;
+        const filter = if (dict.has_filter)
+            try header.Filter.construct(elems, params.scratch_alloc, params.header_alloc)
+        else
+            null;
 
         dicts[dict_idx] = header.Dict{
             .data = try write_binary_array(.i32, params, &dict_array, &data_section_size),
@@ -115,7 +115,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
     var data_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
     var offsets_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
     var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
-    var data_minmax = try ArrayList(header.MinMax)
+    var data_minmax = try ArrayList(header.MinMax).initCapacity(params.scratch_alloc, 128);
 
     var idx: u32 = array.offset;
     while (idx < array.len + array.offset) {
@@ -187,21 +187,25 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .offset = offsets_page_offset,
         });
         try row_index_ends.append(params.scratch_alloc, idx);
+        try data_minmax.append(params.scratch_alloc, binary_minmax(index_t, arrow.slice.slice_binary(index_t, array, idx - page_elem_count, page_elem_count)));
     }
 
-    std.debug.assert(data_pages.len == offsets_pages.len and data_pages.len == row_index_ends.len);
+    std.debug.assert(data_pages.len == offsets_pages.len and data_pages.len == row_index_ends.len and data_pages.len == data_minmax.len);
 
     const data_buffer = header.Buffer{
         .pages = try params.header_alloc.alloc(header.Page, data_pages.items.len),
         .compression = data_compression orelse .no_compression,
+        .minmax = try params.header_alloc.alloc(header.MinMax, data_minmax.items.len),
         .row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len),
     };
     @memcpy(&data_buffer.pages, data_pages.items);
     @memcpy(&data_buffer.row_index_ends, row_index_ends.items);
+    @memcpy(&data_buffer.minmax, data_minmax.items);
 
     const offsets_buffer = header.Buffer{
         .pages = try params.header_alloc.alloc(header.Page, offsets_pages.items.len),
         .compression = offsets_compression orelse .no_compression,
+        .minmax = null,
         .row_index_ends = data_buffer.row_index_ends,
     };
     @memcpy(&offsets_buffer.pages, offsets_pages.items);
@@ -213,7 +217,6 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
     return header.Array{
         .buffers = buffers,
         .children = &.{},
-        .minmax = binary_minmax(array),
         .len = array.len,
         .null_count = array.null_count,
     };

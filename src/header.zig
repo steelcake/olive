@@ -67,12 +67,19 @@ pub const Filter = struct {
     }
 
     pub fn construct(elems: []const []const u8, scratch_alloc: Allocator, filter_alloc: Allocator) xorf.ConstructError!Filter {
-        const hashes = try scratch_alloc.alloc(u64, elems.len);
+        var hashes = try scratch_alloc.alloc(u64, elems.len);
         for (0..hashes.len) |i| {
             hashes[i] = Filter.hash(elems[i]);
         }
-        // const header = xorf.calculate_header(arity, );
-        // xorf.construct_fingerprints(Fingerprint)
+        hashes = sort_and_dedup_hashes(hashes);
+        var header = xorf.calculate_header(arity, hashes.len);
+        const fingerprints = try filter_alloc.alloc(Fingerprint, header.array_length);
+        try xorf.construct_fingerprints(Fingerprint, arity, fingerprints, scratch_alloc, hashes, &header);
+
+        return .{
+            .header = header,
+            .fingerprints = fingerprints,
+        };
     }
 };
 
@@ -86,3 +93,18 @@ pub const Header = struct {
     dicts: []const Dict,
     data_section_size: u32,
 };
+
+/// Ascending sort hashes and deduplicate
+fn sort_and_dedup_hashes(hashes: []u64) []u64 {
+    std.mem.sort(u64, hashes, {}, std.sort.asc(u64));
+    var write_idx: usize = 0;
+
+    for (hashes[1..]) |hash| {
+        if (hash != hashes[write_idx]) {
+            write_idx += 1;
+            hashes[write_idx] = hash;
+        }
+    }
+
+    return hashes[0 .. write_idx + 1];
+}
