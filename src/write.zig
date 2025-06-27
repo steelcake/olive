@@ -232,12 +232,32 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .large_utf8 => |*a| return try write_binary_array(.i64, params, &a.inner, data_section_size),
         .large_list => |*a| unreachable,
         .run_end_encoded => |*a| unreachable,
-        .binary_view => |*a| unreachable,
-        .utf8_view => |*a| unreachable,
+        .binary_view => |*a| return try write_binary_view_array(params, a, data_section_size),
+        .utf8_view => |*a| return try write_binary_view_array(params, &a.inner, data_section_size),
         .list_view => |*a| unreachable,
         .large_list_view => |*a| unreachable,
         .dict => |*a| unreachable,
     }
+}
+
+fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32) Error!header.Array {
+    var total_size: u32 = 0;
+
+    var idx: u32 = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        total_size += array.views[idx];
+    }
+
+    var builder = try arrow.builder.BinaryBuilder.with_capacity(total_size, array.len, array.null_count > 0, params.scratch_alloc);
+
+    idx = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        try builder.append_option(arrow.get.get_binary_view_opt(array.views, array.buffers, array.validity, idx));
+    }
+
+    const bin_array = try builder.finish();
+
+    return try write_binary_array(.i32, params, &bin_array, data_section_size);
 }
 
 fn write_null_array(array: *const arr.NullArray) header.Array {
