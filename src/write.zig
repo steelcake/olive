@@ -194,17 +194,17 @@ fn find_dict(dicts: []const schema.DictSchema, dict_elements: []const arr.Binary
 fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) Error!header.Array {
     switch (array.*) {
         .null => |*a| return write_null_array(a),
-        .i8 => |*a| unreachable,
-        .i16 => |*a| unreachable,
-        .i32 => |*a| unreachable,
-        .i64 => |*a| unreachable,
-        .u8 => |*a| unreachable,
-        .u16 => |*a| unreachable,
-        .u32 => |*a| unreachable,
-        .u64 => |*a| unreachable,
-        .f16 => |*a| unreachable,
-        .f32 => |*a| unreachable,
-        .f64 => |*a| unreachable,
+        .i8 => |*a| return try write_primitive_array(i8, params, a, data_section_size),
+        .i16 => |*a| return try write_primitive_array(i16, params, a, data_section_size),
+        .i32 => |*a| return try write_primitive_array(i32, params, a, data_section_size),
+        .i64 => |*a| return try write_primitive_array(i64, params, a, data_section_size),
+        .u8 => |*a| return try write_primitive_array(u8, params, a, data_section_size),
+        .u16 => |*a| return try write_primitive_array(u16, params, a, data_section_size),
+        .u32 => |*a| return try write_primitive_array(u32, params, a, data_section_size),
+        .u64 => |*a| return try write_primitive_array(u64, params, a, data_section_size),
+        .f16 => |*a| return try write_primitive_array(f16, params, a, data_section_size),
+        .f32 => |*a| return try write_primitive_array(f32, params, a, data_section_size),
+        .f64 => |*a| return try write_primitive_array(f64, params, a, data_section_size),
         .binary => |*a| return try write_binary_array(.i32, params, a, data_section_size),
         .utf8 => |*a| return try write_binary_array(.i32, params, &a.inner, data_section_size),
         .bool => |*a| unreachable,
@@ -253,7 +253,17 @@ fn write_primitive_array(comptime T: type, params: Write, array: *const arr.Prim
     if (array.len == 0) {
         return empty_array();
     }
-    const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = try write_buffer(T, params, array.values[array.offset .. array.offset + array.len], data_section_size);
+
+    return .{
+        .buffers = buffers,
+        .children = &.{},
+        .len = array.len,
+        .null_count = array.null_count,
+    };
 }
 
 fn empty_array() header.Array {
@@ -281,7 +291,9 @@ fn min_of(comptime T: type) T {
     };
 }
 
-fn write_validity(params: Write, offset: u32, len: u32, validity: ?[]const u8, data_section_size: *u32) Error!header.Buffer {
+fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u8, data_section_size: *u32) Error!header.Buffer {
+    const validity = validity_opt orelse return empty_buffer();
+
     const v = if (offset % 8 != 0) non_aligned: {
         const x = try params.scratch_alloc.alloc(u8, (len + 7) / 8);
         @memset(x, 0);
@@ -296,17 +308,47 @@ fn write_validity(params: Write, offset: u32, len: u32, validity: ?[]const u8, d
         break :non_aligned x;
     } else validity[(offset / 8)..(offset / 8 + (len + 7) / 8)];
 
-    return try write_buffer(u8, params, v, data_section_size);
+    var compr: ?Compression = null;
+
+    const page_offset = data_section_size.*;
+    const compressed_size = try write_page(.{
+        .data_section = params.data_section,
+        .page = v,
+        .data_section_size = data_section_size,
+        .compression = &compr,
+        .compression_cfg = params.compression,
+    });
+
+    const pages = try params.header_alloc.alloc(header.Page, 1);
+    pages[0] = header.Page{
+        .offset = page_offset,
+        .compressed_size = compressed_size,
+        .uncompressed_size = v.len,
+    };
+
+    const row_index_ends = try params.header_alloc.alloc(u32, 1);
+    row_index_ends[0] = len;
+
+    return .{
+        .pages = pages,
+        .minmax = null,
+        .row_index_ends = row_index_ends,
+        .compression = compr orelse .no_compression,
+    };
+}
+
+fn empty_buffer() header.Buffer {
+    return header.Buffer{
+        .minmax = null,
+        .pages = &.{},
+        .compression = .no_compression,
+        .row_index_ends = &.{},
+    };
 }
 
 fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
     if (buffer.len == 0) {
-        return header.Buffer{
-            .minmax = null,
-            .pages = &.{},
-            .compression = .no_compression,
-            .row_index_ends = &.{},
-        };
+        return empty_buffer();
     }
     const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
 
