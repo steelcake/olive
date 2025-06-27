@@ -54,7 +54,7 @@ pub fn write(params: Write) Error!header.Header {
     const dicts = try params.header_alloc.alloc(header.Dict, num_dicts);
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.data.len);
 
-    const dict_elems = try params.scratch_alloc.alloc([]const []const u8, num_dicts);
+    const dict_arrays = try params.scratch_alloc.alloc([]const arr.BinaryArray, num_dicts);
 
     for (params.chunk.schema.dicts, 0..) |dict, dict_idx| {
         var num_elems: usize = 0;
@@ -71,10 +71,12 @@ pub fn write(params: Write) Error!header.Header {
             write_idx = try push_array_to_dict(array, write_idx, elems);
         }
 
-        elems = sort_and_dedup(dict_elems[0..write_idx]);
-        dict_elems[dict_idx] = elems;
+        elems = sort_and_dedup(elems[0..write_idx]);
 
         const dict_array = try arrow.builder.BinaryBuilder.from_slice(elems, false, params.scratch_alloc);
+        const data = try write_binary_array(.i32, params, &dict_array, &data_section_size);
+
+        dict_arrays[dict_idx] = dict_array;
 
         const filter = if (dict.has_filter)
             try header.Filter.construct(elems, params.scratch_alloc, params.header_alloc)
@@ -82,7 +84,7 @@ pub fn write(params: Write) Error!header.Header {
             null;
 
         dicts[dict_idx] = header.Dict{
-            .data = try write_binary_array(.i32, params, &dict_array, &data_section_size),
+            .data = data,
             .filter = filter,
         };
     }
@@ -91,8 +93,8 @@ pub fn write(params: Write) Error!header.Header {
         const fields = try params.header_alloc.alloc(header.Array, data.len);
 
         for (data.field_values, 0..) |*array, field_idx| {
-            if (find_dict(params.chunk.schema.dicts, dict_elems, table_idx, field_idx)) |elems| {
-                const dicted_array = try apply_dict(elems, array, params.scratch_alloc);
+            if (find_dict(params.chunk.schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
+                const dicted_array = try apply_dict(dict_arr, array, params.scratch_alloc);
                 fields[field_idx] = try write_primitive_array(params, &dicted_array, data_section_size);
             } else {
                 fields[field_idx] = try write_array(params, array, data_section_size);
@@ -111,28 +113,28 @@ pub fn write(params: Write) Error!header.Header {
     };
 }
 
-fn apply_dict(dict_elems: []const []const u8, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
+fn apply_dict(dict_array: *const arr.BinaryArray, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
     switch (array.*) {
         .binary => |*a| {
-            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32).get_item, dict_elems, a, scratch_alloc);
+            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32).get_item, dict_array, a, scratch_alloc);
         },
         .large_binary => |*a| {
-            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64).get_item, dict_elems, a, scratch_alloc);
+            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64).get_item, dict_array, a, scratch_alloc);
         },
         .binary_view => |*a| {
-            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_elems, a, scratch_alloc);
+            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_array, a, scratch_alloc);
         },
         .fixed_size_binary => |*a| {
-            return apply_dict_to_array(arr.FixedSizeBinaryArray, get_item_fixed_size_binary, dict_elems, a, scratch_alloc);
+            return apply_dict_to_array(arr.FixedSizeBinaryArray, get_item_fixed_size_binary, dict_array, a, scratch_alloc);
         },
         .utf8 => |*a| {
-            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32), dict_elems, &a.inner, scratch_alloc);
+            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32), dict_array, &a.inner, scratch_alloc);
         },
         .large_utf8 => |*a| {
-            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64), dict_elems, &a.inner, scratch_alloc);
+            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64), dict_array, &a.inner, scratch_alloc);
         },
         .utf8_view => |*a| {
-            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_elems, &a.inner, scratch_alloc);
+            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_array, &a.inner, scratch_alloc);
         },
         else => return Error.NonBinaryArrayWithDict,
     }
@@ -152,19 +154,20 @@ fn get_item_fixed_size_binary(a: *const arr.FixedSizeBinaryArray, idx: u32) ?[]c
     return arrow.get.get_fixed_size_binary_opt(a.data, a.byte_width, a.validity, idx);
 }
 
-fn apply_dict_to_array(comptime ArrayT: type, comptime get_item: fn (a: *const ArrayT, idx: u32) ?[]const u8, dict_elems: []const []const u8, array: *const ArrayT, scratch_alloc: Allocator) usize {
+fn apply_dict_to_array(comptime ArrayT: type, comptime get_item: fn (a: *const ArrayT, idx: u32) ?[]const u8, dict_elems: *const arr.BinaryArray, array: *const ArrayT, scratch_alloc: Allocator) usize {
     var builder = try arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc);
 
     var item: u32 = array.offset;
     while (item < array.offset + array.len) : (item += 1) {
         if (get_item(array, item)) |s| {
-            var elem_idx: u32 = 0;
-            for (dict_elems) |elem| {
-                if (std.mem.eql(elem, s)) {
-                    try builder.append_value(elem_idx);
+            var dict_elem_idx: u32 = dict_elems.offset;
+            while (dict_elem_idx < dict_elems.offset + dict_elems.len) : (dict_elem_idx += 1) {
+                const dict_elem = arrow.get.get_binary(.i32, dict_elems.data, dict_elems.offsets, dict_elem_idx);
+
+                if (std.mem.eql(dict_elem, s)) {
+                    try builder.append_value(dict_elem_idx);
                     break;
                 }
-                elem_idx += 1;
             } else {
                 unreachable;
             }
@@ -176,7 +179,7 @@ fn apply_dict_to_array(comptime ArrayT: type, comptime get_item: fn (a: *const A
     return try builder.finish();
 }
 
-fn find_dict(dicts: []const schema.DictSchema, dict_elements: []const []const []const u8, table_index: usize, field_index: usize) ?[]const []const u8 {
+fn find_dict(dicts: []const schema.DictSchema, dict_elements: []const arr.BinaryArray, table_index: usize, field_index: usize) ?*const arr.BinaryArray {
     for (dicts, 0..) |dict, dict_idx| {
         for (dict.members) |member| {
             if (member.table_index == table_index and member.field_index == field_index) {
