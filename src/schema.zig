@@ -1,6 +1,7 @@
 const std = @import("std");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
+const Compression = @import("./compression.zig");
 
 pub const TableSchema = struct {
     field_names: []const [:0]const u8,

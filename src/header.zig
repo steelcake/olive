@@ -1,33 +1,34 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
 
-pub const Compression = enum {
-    no_compression,
-    lz4,
-    zstd,
-    int_delta_bit_pack,
-    int_bit_pack,
-};
+const Compression = @import("./compression.zig").Compression;
+
+/// Number of bytes for MinMax values
+pub const MinMaxLen = 32;
 
 /// 32 byte prefixes of min/max values a page has.
-/// Integers are encoded as little endian.
+/// Integral values are encoded as little endian.
+/// Null values are not included in minmax.
+///
+/// min will be {u8.MAX} * 32 and max will be {0} * 32 if there wasn't any non-null values in the array
 pub const MinMax = struct {
-    min: [32]u8,
-    max: [32]u8,
+    min: [MinMaxLen]u8,
+    max: [MinMaxLen]u8,
 };
 
 pub const Page = struct {
     /// Offset of the page start inside the data section of file
     offset: u32,
     uncompressed_size: u32,
-    /// Compressed size of the page, 0 if not compressed
+    /// Compressed size of the page, equals uncompressed_size if parent buffer.compression is set to `.no_compression`
     compressed_size: u32,
 };
 
 pub const Buffer = struct {
     pages: []const Page,
-    minmax: []const MinMax,
+    minmax: ?[]const MinMax,
     row_index_ends: []const u32,
     compression: Compression,
 };
@@ -36,6 +37,9 @@ pub const Buffer = struct {
 pub const Array = struct {
     buffers: []const Buffer,
     children: []const Array,
+    minmax: ?MinMax,
+    len: u32,
+    null_count: u32,
 };
 
 pub const Table = struct {
@@ -57,6 +61,22 @@ pub const Filter = struct {
     pub fn check_hash(self: *const Filter, hash_: u64) bool {
         return xorf.filter_check(Fingerprint, arity, &self.header, self.fingerprints, hash_);
     }
+
+    pub fn construct(elems: []const []const u8, scratch_alloc: Allocator, filter_alloc: Allocator) xorf.ConstructError!Filter {
+        var hashes = try scratch_alloc.alloc(u64, elems.len);
+        for (0..hashes.len) |i| {
+            hashes[i] = Filter.hash(elems[i]);
+        }
+        hashes = sort_and_dedup_hashes(hashes);
+        var header = xorf.calculate_header(arity, hashes.len);
+        const fingerprints = try filter_alloc.alloc(Fingerprint, header.array_length);
+        try xorf.construct_fingerprints(Fingerprint, arity, fingerprints, scratch_alloc, hashes, &header);
+
+        return .{
+            .header = header,
+            .fingerprints = fingerprints,
+        };
+    }
 };
 
 pub const Dict = struct {
@@ -69,3 +89,18 @@ pub const Header = struct {
     dicts: []const Dict,
     data_section_size: u32,
 };
+
+/// Ascending sort hashes and deduplicate
+fn sort_and_dedup_hashes(hashes: []u64) []u64 {
+    std.mem.sort(u64, hashes, {}, std.sort.asc(u64));
+    var write_idx: usize = 0;
+
+    for (hashes[1..]) |hash| {
+        if (hash != hashes[write_idx]) {
+            write_idx += 1;
+            hashes[write_idx] = hash;
+        }
+    }
+
+    return hashes[0 .. write_idx + 1];
+}
