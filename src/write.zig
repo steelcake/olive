@@ -246,7 +246,6 @@ fn write_null_array(array: *const arr.NullArray) header.Array {
         .children = &.{},
         .len = array.len,
         .null_count = 0,
-        .minmax = null,
     };
 }
 
@@ -263,11 +262,118 @@ fn empty_array() header.Array {
         .children = &.{},
         .len = 0,
         .null_count = 0,
-        .minmax = null,
     };
 }
 
-fn write_buffer(comptime T: type, params: Write, buf: []const T, data_section_size: *u32) Error!header.Buffer {}
+fn max_of(comptime T: type) T {
+    return comptime switch (@typeInfo(T)) {
+        .float => std.math.floatMax(T),
+        .int => std.math.maxInt(T),
+        else => unreachable,
+    };
+}
+
+fn min_of(comptime T: type) T {
+    return comptime switch (@typeInfo(T)) {
+        .float => std.math.floatMax(T),
+        .int => std.math.maxInt(T),
+        else => unreachable,
+    };
+}
+
+fn write_validity(params: Write, offset: u32, len: u32, validity: ?[]const u8, data_section_size: *u32) Error!header.Buffer {
+    const v = if (offset % 8 != 0) non_aligned: {
+        const x = try params.scratch_alloc.alloc(u8, (len + 7) / 8);
+        @memset(x, 0);
+
+        var i: u32 = offset;
+        while (i < offset + len) : (i += 1) {
+            if (arrow.bitmap.get(validity, i)) {
+                arrow.bitmap.set(x, i);
+            }
+        }
+
+        break :non_aligned x;
+    } else validity[(offset / 8)..(offset / 8 + (len + 7) / 8)];
+
+    return try write_buffer(u8, params, v, data_section_size);
+}
+
+fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
+    if (buffer.len == 0) {
+        return header.Buffer{
+            .minmax = null,
+            .pages = &.{},
+            .compression = .no_compression,
+            .row_index_ends = &.{},
+        };
+    }
+    const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
+
+    var compr: ?Compression = null;
+
+    var pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
+    var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
+    var minmax = try ArrayList(header.MinMax).initCapacity(params.scratch_alloc, 128);
+
+    var idx: u32 = 0;
+    while (idx < buffer.len) {
+        var min: T = min_of(T);
+        var max: T = max_of(T);
+
+        var page_size = 0;
+        var page_elem_count = 0;
+
+        while (page_size < target_page_size and idx < buffer.len) : (idx += 1) {
+            const elem = buffer[idx];
+
+            page_elem_count += 1;
+            page_size += @sizeOf(T);
+
+            min = @min(min, elem);
+            max = @max(max, elem);
+        }
+
+        if (page_elem_count == 0) {
+            continue;
+        }
+
+        const page = buffer[idx - page_elem_count .. idx];
+        std.debug.assert(page.len == page_elem_count);
+
+        const page_offset = data_section_size.*;
+        const compressed_size = try write_page(.{
+            .data_section = params.data_section,
+            .page = page,
+            .data_section_size = data_section_size,
+            .compression = &compr,
+            .compression_cfg = params.compression,
+        });
+
+        // Write header info to arrays
+        try pages.append(params.scratch_alloc, header.Page{
+            .uncompressed_size = page_size,
+            .compressed_size = compressed_size,
+            .offset = page_offset,
+        });
+        try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
+        try minmax.append(params.scratch_alloc, header.MinMax{ .min = min, .max = max });
+    }
+
+    std.debug.assert(pages.len == row_index_ends.len and pages.len == minmax.len);
+
+    const out = header.Buffer{
+        .pages = try params.header_alloc.alloc(header.Page, pages.items.len),
+        .compression = compr orelse .no_compression,
+        .minmax = try params.header_alloc.alloc(header.MinMax, minmax.items.len),
+        .row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len),
+    };
+    @memcpy(&out.pages, pages.items);
+    @memcpy(&out.row_index_ends, row_index_ends.items);
+    @memcpy(&out.minmax, minmax.items);
+
+    return out;
+}
 
 fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericBinaryArray(index_t), data_section_size: *u32) Error!header.Array {
     if (array.len == 0) {
@@ -354,8 +460,8 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .compressed_size = offsets_page_compressed_size,
             .offset = offsets_page_offset,
         });
-        try row_index_ends.append(params.scratch_alloc, idx);
-        try data_minmax.append(params.scratch_alloc, binary_minmax(index_t, arrow.slice.slice_binary(index_t, array, idx - page_elem_count, page_elem_count)));
+        try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
+        try data_minmax.append(params.scratch_alloc, header.MinMax{ .min = min, .max = max });
     }
 
     std.debug.assert(data_pages.len == offsets_pages.len and data_pages.len == row_index_ends.len and data_pages.len == data_minmax.len);
@@ -378,9 +484,10 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
     };
     @memcpy(&offsets_buffer.pages, offsets_pages.items);
 
-    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
-    buffers[0] = offsets_buffer;
-    buffers[1] = data_buffer;
+    const buffers = try params.header_alloc.alloc(header.Buffer, 3);
+    buffers[0] = write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = offsets_buffer;
+    buffers[2] = data_buffer;
 
     return header.Array{
         .buffers = buffers,
@@ -426,7 +533,7 @@ const WritePage = struct {
     compression_cfg: Compression,
 };
 
-fn write_page(params: WritePage) Error!void {
+fn write_page(params: WritePage) Error!usize {
     const ds_size = params.data_section_size.*;
     const compr_bound = compression.compress_bound(params.page.len);
     if (params.data_section.len < ds_size + compr_bound) {
@@ -435,6 +542,8 @@ fn write_page(params: WritePage) Error!void {
     const compress_dst = params.data_section[ds_size .. ds_size + compr_bound];
     const compressed_size = try compress(params.page, compress_dst, params.compression, params.compression_cfg);
     params.data_section_size.* = ds_size + compressed_size;
+
+    return compressed_size;
 }
 
 fn compress(src: []const u8, dst: []u8, compr: *?Compression, compr_cfg: Compression) Error!usize {

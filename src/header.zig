@@ -35,9 +35,8 @@ pub const Buffer = struct {
 
 /// Same layout as described in Arrow Spec
 pub const Array = struct {
-    buffers: []const Buffer,
+    buffers: []const ?Buffer,
     children: []const Array,
-    minmax: ?MinMax,
     len: u32,
     null_count: u32,
 };
