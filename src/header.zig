@@ -3,11 +3,7 @@ const Allocator = std.mem.Allocator;
 const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
 
-pub const Compression = enum {
-    no_compression,
-    lz4,
-    zstd,
-};
+const Compression = @import("./compression.zig").Compression;
 
 /// Number of bytes for MinMax values
 pub const MinMaxLen = 32;

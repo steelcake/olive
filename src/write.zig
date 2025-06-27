@@ -9,18 +9,17 @@ const native_endian = @import("builtin").target.cpu.arch.endian();
 const header = @import("./header.zig");
 const chunk = @import("./chunk.zig");
 const schema = @import("./schema.zig");
+const compression = @import("./compression.zig");
 
-pub const Error = error{
-    UnsupportedTypeForMinMax,
+pub const Compression = compression.Compression;
+
+const Error = error{
     OutOfMemory,
     DictArrayNotSupported,
     RunEndEncodedArrayNotSupported,
-    BinaryViewArrayNotSupported,
-    ListViewArrayNotSupported,
     DataSectionOverflow,
     NonBinaryArrayWithDict,
-    Lz4CompressionFail,
-    ZstdCompressionFail,
+    CompressFail,
 };
 
 /// Swap bytes of integer if target is big endian
@@ -43,6 +42,9 @@ pub const Write = struct {
     data_section: []u8,
     /// Targeted page size in kilobytes
     page_size_kb: ?u32,
+    /// Compression to use for individual pages.
+    /// Compression will be disabled for buffers that don't compress enough to be worth it
+    compression: Compression,
 };
 
 pub fn write(params: Write) Error!header.Header {
@@ -105,8 +107,8 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
     }
     const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
 
-    var data_compression: ?header.Compression = null;
-    var offsets_compression: ?header.Compression = null;
+    var data_compression: ?Compression = null;
+    var offsets_compression: ?Compression = null;
 
     var data_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
     var offsets_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
@@ -160,6 +162,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .page = data_page,
             .data_section_size = data_section_size,
             .compression = &data_compression,
+            .compression_cfg = params.compression,
         });
 
         // Write offsets page
@@ -169,6 +172,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .page = @ptrCast(array.offsets[idx - page_elem_count .. idx]),
             .data_section_size = data_section_size,
             .compression = &offsets_compression,
+            .compression_cfg = params.compression,
         });
 
         // Write header info to arrays
@@ -178,7 +182,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .offset = data_page_offset,
         });
         try offsets_pages.append(params.scratch_alloc, header.Page{
-            .uncompressed_size = @sizeOf(index_t.to_type()) * page_elem_count + 1,
+            .uncompressed_size = @sizeOf(index_t.to_type()) * (page_elem_count + 1),
             .compressed_size = offsets_page_compressed_size,
             .offset = offsets_page_offset,
         });
@@ -250,64 +254,40 @@ const WritePage = struct {
     data_section: []u8,
     page: []const u8,
     data_section_size: *u32,
-    compression: *?header.Compression,
+    compression: *?Compression,
+    compression_cfg: Compression,
 };
 
 fn write_page(params: WritePage) Error!void {
     const ds_size = params.data_section_size.*;
-    const compr_bound = compress_bound(params.page.len);
+    const compr_bound = compression.compress_bound(params.page.len);
     if (params.data_section.len < ds_size + compr_bound) {
         return Error.DataSectionOverflow;
     }
     const compress_dst = params.data_section[ds_size .. ds_size + compr_bound];
-    const compressed_size = compress(params.page, compress_dst, params.compression);
+    const compressed_size = try compress(params.page, compress_dst, params.compression, params.compression_cfg);
     params.data_section_size.* = ds_size + compressed_size;
 }
 
-fn compress(src: []const u8, dst: []u8, compression: *?header.Compression) usize {
+fn compress(src: []const u8, dst: []u8, compr: *?Compression, compr_cfg: Compression) Error!usize {
     if (src.len == 0) {
         return 0;
     }
 
-    const algo: header.Compression = if (compression.*) |alg| 
-        alg
-    else alg_calc: {
-        // Numbers taken from https://github.com/lz4/lz4?tab=readme-ov-file#benchmarks
-        //
-        // decompress speed (MB/s) divided by compressed_size gives us 
+    if (compr) |algo| {
+        return try compression.compress(src, dst, algo);
+    }
 
-    };
+    const compressed_size = try compression.compress(src, dst, compr_cfg);
 
-    if (algo) |a| {
-        switch (a) {
-            .lz4 => {
-                const res = LZ4_compress_default(src.ptr, dst.ptr, src.len, dst.len);
-                if (res != 0) {
-                    return res;
-                } else {
-                    return Error.Lz4CompressionFail;
-                }
-            },
-            .zstd => {
-                const res = ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, 8);
-                if (ZSTD_isError(res) == 0) {
-                    return res;
-                } else {
-                    return Error.ZstdCompressionFail;
-                }
-            },
-            .no_compression => {
-                return src.len;
-            },
-        }
+    if (compressed_size * 2 <= src.len) {
+        compr.* = compr_cfg;
+        return compressed_size;
     } else {
-        // try all algo and decide
+        compr.* = .no_compression;
+        return try compression.compress(src, dst, .no_compression);
     }
 }
-
-// fn create_dict_filter(params: Write, elem: []const []const u8) Error!header.Array {
-
-// }
 
 /// Ascending sort elements and deduplicate
 fn sort_and_dedup(data: [][]const u8) [][]const u8 {
