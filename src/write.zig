@@ -6,6 +6,12 @@ const ArrayList = std.ArrayListUnmanaged;
 
 const native_endian = @import("builtin").target.cpu.arch.endian();
 
+comptime {
+    if (native_endian != .little) {
+        @compileError("olive only supports little-endian architectures.");
+    }
+}
+
 const header = @import("./header.zig");
 const chunk = @import("./chunk.zig");
 const schema = @import("./schema.zig");
@@ -21,14 +27,6 @@ const Error = error{
     NonBinaryArrayWithDict,
     CompressFail,
 };
-
-/// Swap bytes of integer if target is big endian
-fn maybe_byte_swap(val: anytype) @TypeOf(val) {
-    return switch (native_endian) {
-        .big => @byteSwap(val),
-        .little => val,
-    };
-}
 
 pub const Write = struct {
     /// Input data and schema.
@@ -207,7 +205,7 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .f64 => |*a| return try write_primitive_array(f64, params, a, data_section_size),
         .binary => |*a| return try write_binary_array(.i32, params, a, data_section_size),
         .utf8 => |*a| return try write_binary_array(.i32, params, &a.inner, data_section_size),
-        .bool => |*a| unreachable,
+        .bool => |*a| return try write_bool_array(params, a, data_section_size),
         .decimal32 => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size),
         .decimal64 => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size),
         .decimal128 => |*a| return try write_primitive_array(i128, params, &a.inner, data_section_size),
@@ -220,17 +218,17 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .interval_year_month => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size),
         .interval_day_time => |*a| return try write_primitive_array([2]i32, params, &a.inner, data_section_size),
         .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, &a.inner, data_section_size),
-        .list => |*a| unreachable,
+        .list => |*a| return try write_list_array(.i32, params, a, data_section_size),
         .struct_ => |*a| unreachable,
         .dense_union => |*a| unreachable,
         .sparse_union => |*a| unreachable,
         .fixed_size_binary => |*a| unreachable,
         .fixed_size_list => |*a| unreachable,
         .map => |*a| unreachable,
-        .duration => |*a| unreachable,
+        .duration => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size),
         .large_binary => |*a| return try write_binary_array(.i64, params, a, data_section_size),
         .large_utf8 => |*a| return try write_binary_array(.i64, params, &a.inner, data_section_size),
-        .large_list => |*a| unreachable,
+        .large_list => |*a| return try write_list_array(.i64, params, a, data_section_size),
         .run_end_encoded => |*a| unreachable,
         .binary_view => |*a| return try write_binary_view_array(params, a, data_section_size),
         .utf8_view => |*a| return try write_binary_view_array(params, &a.inner, data_section_size),
@@ -238,6 +236,43 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .large_list_view => |*a| unreachable,
         .dict => |*a| unreachable,
     }
+}
+
+fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListArray(index_t), data_section_size: *u32) Error!header.Array {
+    if (array.len == 0) {
+        return empty_array();
+    }
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = try write_buffer(index_t.to_type(), params, array.offsets[array.offset .. array.offset + array.len + 1], data_section_size);
+
+    const children = try params.header_alloc.alloc(header.Array, 1);
+    children[0] = try write_array(params, array.inner, data_section_size);
+
+    return .{
+        .buffers = buffers,
+        .children = children,
+        .len = array.len,
+        .null_count = array.null_count,
+    };
+}
+
+fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_size: *u32) Error!header.Array {
+    if (array.len == 0) {
+        return empty_array();
+    }
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = try write_validity(params, array.offset, array.len, array.values, data_section_size);
+
+    return .{
+        .buffers = buffers,
+        .children = &.{},
+        .len = array.len,
+        .null_count = array.null_count,
+    };
 }
 
 fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32) Error!header.Array {
