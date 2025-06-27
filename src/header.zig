@@ -44,7 +44,6 @@ pub const Array = struct {
 
 pub const Table = struct {
     fields: []const Array,
-    dict_indices: []const ?u8,
 };
 
 pub const Filter = struct {
