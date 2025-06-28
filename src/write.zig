@@ -220,23 +220,74 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .interval_day_time => |*a| return try write_primitive_array([2]i32, params, &a.inner, data_section_size),
         .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, &a.inner, data_section_size),
         .list => |*a| return try write_list_array(.i32, params, a, data_section_size),
-        .struct_ => |*a| return try write_struct_array(params, array, data_section_size),
-        .dense_union => |*a| unreachable,
-        .sparse_union => |*a| unreachable,
-        .fixed_size_binary => |*a| write_fixed_size_binary_array(params, a, data_section_size),
-        .fixed_size_list => |*a| write_fixed_size_list_array(params, a, data_section_size),
+        .struct_ => |*a| return try write_struct_array(params, a, data_section_size),
+        .dense_union => |*a| return try write_dense_union_array(params, a, data_section_size),
+        .sparse_union => |*a| return try write_sparse_union_array(params, a, data_section_size),
+        .fixed_size_binary => |*a| return try write_fixed_size_binary_array(params, a, data_section_size),
+        .fixed_size_list => |*a| return try write_fixed_size_list_array(params, a, data_section_size),
         .map => |*a| unreachable,
         .duration => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size),
         .large_binary => |*a| return try write_binary_array(.i64, params, a, data_section_size),
         .large_utf8 => |*a| return try write_binary_array(.i64, params, &a.inner, data_section_size),
         .large_list => |*a| return try write_list_array(.i64, params, a, data_section_size),
+        // TODO: not added because it isn't tested for ffi in arrow-zig yet
         .run_end_encoded => return Error.RunEndEncodedArrayNotSupported,
         .binary_view => |*a| return try write_binary_view_array(params, a, data_section_size),
         .utf8_view => |*a| return try write_binary_view_array(params, &a.inner, data_section_size),
+        // TODO: probably need concat implemented in arrow-zig in order to implement this in a way that makes sense
         .list_view => return Error.ListViewArrayNotSupported,
         .large_list_view => return Error.ListViewArrayNotSupported,
+        // TODO: not added because it isn't tested for ffi in arrow-zig yet
         .dict => return Error.DictArrayNotSupported,
     }
+}
+
+fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, data_section_size: *u32) Error!header.Array {
+    if (array.inner.len == 0) {
+        return empty_array();
+    }
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 1);
+    buffers[1] = try write_buffer(i8, params, array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len], data_section_size);
+
+    const children = try params.header_alloc.alloc(header.Array, array.inner.children.len);
+
+    for (array.inner.children, 0..) |*c, idx| {
+        const sliced = arrow.slice.slice(c, array.inner.offset, array.inner.len);
+        children[idx] = try write_array(params, &sliced, data_section_size);
+    }
+
+    return .{
+        .buffers = buffers,
+        .children = children,
+        .len = array.inner.len,
+        .null_count = 0,
+    };
+}
+
+fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, data_section_size: *u32) Error!header.Array {
+    if (array.inner.len == 0) {
+        return empty_array();
+    }
+
+    // TODO: Can minimize the data written more if the union array itself has an offset. But it is not trivial to do it
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
+    buffers[0] = try write_buffer(i32, params, array.offsets[array.inner.offset .. array.inner.offset + array.inner.len], data_section_size);
+    buffers[1] = try write_buffer(i8, params, array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len], data_section_size);
+
+    const children = try params.header_alloc.alloc(header.Array, array.inner.children.len);
+
+    for (array.inner.children, 0..) |*c, idx| {
+        children[idx] = try write_array(params, c, data_section_size);
+    }
+
+    return .{
+        .buffers = buffers,
+        .children = children,
+        .len = array.inner.len,
+        .null_count = 0,
+    };
 }
 
 fn write_struct_array(params: Write, array: *const arr.StructArray, data_section_size: *u32) Error!header.Array {
@@ -670,6 +721,11 @@ fn normalize_offsets(comptime index_t: arr.IndexType, offsets: []const index_t.t
     }
 
     const base = offsets[0];
+
+    if (base == 0) {
+        return offsets;
+    }
+
     const normalized = try scratch_alloc.alloc(index_t.to_type(), offsets.len);
 
     for (0..offsets.len) |idx| {
