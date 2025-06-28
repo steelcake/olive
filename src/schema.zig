@@ -7,20 +7,14 @@ pub const TableSchema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
 
-    pub fn check(self: *const TableSchema, data: *const arrow.array.StructArray) bool {
+    pub fn check(self: *const TableSchema, table: []const arrow.array.Array) bool {
         std.debug.assert(self.field_names.len == self.data_types.len);
 
-        if (self.field_names.len != data.field_names.len or self.data_types.len != data.field_values.len) {
+        if (self.data_types.len != table.len) {
             return false;
         }
 
-        for (self.field_names, data.field_names) |sfn, dfn| {
-            if (!std.mem.eql(u8, sfn, dfn)) {
-                return false;
-            }
-        }
-
-        for (self.data_types, data.field_values) |*sdt, *dfv| {
+        for (self.data_types, table) |*sdt, *dfv| {
             if (!arrow.data_type.check_data_type(dfv, sdt)) {
                 return false;
             }
@@ -54,14 +48,14 @@ pub const DatasetSchema = struct {
     pub fn validate(_: *const DatasetSchema) ValidationError!void {}
 
     /// Check if given data matches with the schema
-    pub fn check(self: *const DatasetSchema, data: []const arrow.array.StructArray) bool {
+    pub fn check(self: *const DatasetSchema, tables: []const []const arrow.array.Array) bool {
         std.debug.assert(self.table_names.len == self.tables.len);
 
-        if (self.tables.len != data.len) {
+        if (self.tables.len != tables.len) {
             return false;
         }
 
-        for (self.tables, data) |*tbl, *d| {
+        for (self.tables, tables) |*tbl, d| {
             if (!tbl.check(d)) {
                 return false;
             }

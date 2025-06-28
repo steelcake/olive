@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const arrow = @import("arrow");
 const arr = arrow.array;
 const ArrayList = std.ArrayListUnmanaged;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const testing = std.testing;
 
 const native_endian = @import("builtin").target.cpu.arch.endian();
 
@@ -19,7 +21,7 @@ const compression = @import("./compression.zig");
 
 pub const Compression = compression.Compression;
 
-const Error = error{
+pub const Error = error{
     OutOfMemory,
     DictArrayNotSupported,
     RunEndEncodedArrayNotSupported,
@@ -52,34 +54,38 @@ pub fn write(params: Write) Error!header.Header {
 
     const num_dicts = params.chunk.schema.dicts.len;
     const dicts = try params.header_alloc.alloc(header.Dict, num_dicts);
-    const tables = try params.header_alloc.alloc(header.Table, params.chunk.data.len);
+    const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
-    const dict_arrays = try params.scratch_alloc.alloc([]const arr.BinaryArray, num_dicts);
+    const dict_arrays = try params.scratch_alloc.alloc(arr.BinaryArray, num_dicts);
 
     for (params.chunk.schema.dicts, 0..) |dict, dict_idx| {
         var num_elems: usize = 0;
 
         for (dict.members) |member| {
-            num_elems += count_array_to_dict(&params.chunk.data[member.table_index].field_values[member.field_index]);
+            num_elems += count_array_to_dict(&params.chunk.tables[member.table_index][member.field_index]);
         }
 
         var elems = try params.scratch_alloc.alloc([]const u8, num_elems);
 
         var write_idx: usize = 0;
         for (dict.members) |member| {
-            const array = &params.chunk.data[member.table_index].field_values[member.field_index];
+            const array = &params.chunk.tables[member.table_index][member.field_index];
             write_idx = try push_array_to_dict(array, write_idx, elems);
         }
 
         elems = sort_and_dedup(elems[0..write_idx]);
 
-        const dict_array = try arrow.builder.BinaryBuilder.from_slice(elems, false, params.scratch_alloc);
+        const dict_array = arrow.builder.BinaryBuilder.from_slice(elems, false, params.scratch_alloc) catch |e| {
+            if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+        };
         const data = try write_binary_array(.i32, params, &dict_array, &data_section_size);
 
         dict_arrays[dict_idx] = dict_array;
 
         const filter = if (dict.has_filter)
-            try header.Filter.construct(elems, params.scratch_alloc, params.header_alloc)
+            header.Filter.construct(elems, params.scratch_alloc, params.header_alloc) catch |e| {
+                if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+            }
         else
             null;
 
@@ -89,15 +95,15 @@ pub fn write(params: Write) Error!header.Header {
         };
     }
 
-    for (params.chunk.data, 0..) |data, table_idx| {
-        const fields = try params.header_alloc.alloc(header.Array, data.len);
+    for (params.chunk.tables, 0..) |table, table_idx| {
+        const fields = try params.header_alloc.alloc(header.Array, table.len);
 
-        for (data.field_values, 0..) |*array, field_idx| {
+        for (table, 0..) |*array, field_idx| {
             if (find_dict(params.chunk.schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
                 const dicted_array = try apply_dict(dict_arr, array, params.scratch_alloc);
-                fields[field_idx] = try write_primitive_array(params, &dicted_array, data_section_size);
+                fields[field_idx] = try write_primitive_array(u32, params, &dicted_array, &data_section_size);
             } else {
-                fields[field_idx] = try write_array(params, array, data_section_size);
+                fields[field_idx] = try write_array(params, array, &data_section_size);
             }
         }
 
@@ -540,8 +546,8 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
         var min: T = min_of(T);
         var max: T = max_of(T);
 
-        var page_size = 0;
-        var page_elem_count = 0;
+        var page_size: usize = 0;
+        var page_elem_count: usize = 0;
 
         while (page_size < target_page_size and idx < buffer.len) : (idx += 1) {
             const elem = buffer[idx];
@@ -887,4 +893,56 @@ fn push_array_to_dict_impl(comptime ArrayT: type, comptime get_item: fn (a: *con
     }
 
     return wi;
+}
+
+fn run_test_impl(id: u8) !void {
+    var array_arena = ArenaAllocator.init(testing.allocator);
+    defer array_arena.deinit();
+
+    const array = try arrow.test_array.make_array(id, array_arena.allocator());
+
+    const data_section = try testing.allocator.alloc(u8, 1 << 22);
+    defer testing.allocator.free(data_section);
+
+    var scratch_arena = ArenaAllocator.init(testing.allocator);
+    defer scratch_arena.deinit();
+
+    var header_arena = ArenaAllocator.init(testing.allocator);
+    defer header_arena.deinit();
+
+    const data = chunk.Chunk{
+        .tables = &.{&.{array}},
+        .schema = schema.DatasetSchema{
+            .table_names = &.{"anan"},
+            .dicts = &.{},
+            .tables = &.{},
+        },
+    };
+
+    try data.schema.validate();
+    try testing.expect(data.schema.check(data.tables));
+
+    const head = try write(.{
+        .data_section = data_section,
+        .compression = .{ .lz4_hc = 9 },
+        .page_size_kb = 1 << 20,
+        .header_alloc = header_arena.allocator(),
+        .scratch_alloc = scratch_arena.allocator(),
+        .chunk = &data,
+    });
+
+    _ = head;
+}
+
+fn run_test(id: u8) !void {
+    return run_test_impl(id) catch |e| err: {
+        std.log.err("failed test id: {}", .{id});
+        break :err e;
+    };
+}
+
+test "smoke test write" {
+    for (0..arrow.test_array.NUM_ARRAYS) |i| {
+        try run_test(@intCast(i));
+    }
 }

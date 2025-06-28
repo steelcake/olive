@@ -66,7 +66,7 @@ pub const Filter = struct {
             hashes[i] = Filter.hash(elems[i]);
         }
         hashes = sort_and_dedup_hashes(hashes);
-        var header = xorf.calculate_header(arity, hashes.len);
+        var header = xorf.calculate_header(arity, @intCast(hashes.len));
         const fingerprints = try filter_alloc.alloc(Fingerprint, header.array_length);
         try xorf.construct_fingerprints(Fingerprint, arity, fingerprints, scratch_alloc, hashes, &header);
 
