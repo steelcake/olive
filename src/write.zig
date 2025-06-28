@@ -23,6 +23,7 @@ const Error = error{
     OutOfMemory,
     DictArrayNotSupported,
     RunEndEncodedArrayNotSupported,
+    ListViewArrayNotSupported,
     DataSectionOverflow,
     NonBinaryArrayWithDict,
     CompressFail,
@@ -219,23 +220,86 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .interval_day_time => |*a| return try write_primitive_array([2]i32, params, &a.inner, data_section_size),
         .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, &a.inner, data_section_size),
         .list => |*a| return try write_list_array(.i32, params, a, data_section_size),
-        .struct_ => |*a| unreachable,
+        .struct_ => |*a| return try write_struct_array(params, array, data_section_size),
         .dense_union => |*a| unreachable,
         .sparse_union => |*a| unreachable,
-        .fixed_size_binary => |*a| unreachable,
-        .fixed_size_list => |*a| unreachable,
+        .fixed_size_binary => |*a| write_fixed_size_binary_array(params, a, data_section_size),
+        .fixed_size_list => |*a| write_fixed_size_list_array(params, a, data_section_size),
         .map => |*a| unreachable,
         .duration => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size),
         .large_binary => |*a| return try write_binary_array(.i64, params, a, data_section_size),
         .large_utf8 => |*a| return try write_binary_array(.i64, params, &a.inner, data_section_size),
         .large_list => |*a| return try write_list_array(.i64, params, a, data_section_size),
-        .run_end_encoded => |*a| unreachable,
+        .run_end_encoded => return Error.RunEndEncodedArrayNotSupported,
         .binary_view => |*a| return try write_binary_view_array(params, a, data_section_size),
         .utf8_view => |*a| return try write_binary_view_array(params, &a.inner, data_section_size),
-        .list_view => |*a| unreachable,
-        .large_list_view => |*a| unreachable,
-        .dict => |*a| unreachable,
+        .list_view => return Error.ListViewArrayNotSupported,
+        .large_list_view => return Error.ListViewArrayNotSupported,
+        .dict => return Error.DictArrayNotSupported,
     }
+}
+
+fn write_struct_array(params: Write, array: *const arr.StructArray, data_section_size: *u32) Error!header.Array {
+    if (array.len == 0) {
+        return empty_array();
+    }
+
+    const buffers = try params.header_alloc.alloc(header.Buffer, 1);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+
+    const children = try params.header_alloc.alloc(header.Array, array.field_values.len);
+
+    for (array.field_values, 0..) |*field, idx| {
+        const sliced = arrow.slice.slice(field, array.offset, array.len);
+        children[idx] = try write_array(params, &sliced, data_section_size);
+    }
+
+    return .{
+        .buffers = buffers,
+        .children = children,
+        .len = array.len,
+        .null_count = array.null_count,
+    };
+}
+
+fn write_fixed_size_list_array(params: Write, array: *const arr.FixedSizeListArray, data_section_size: *u32) Error!header.Array {
+    if (array.len == 0) {
+        return empty_array();
+    }
+
+    var builder = try arrow.builder.ListBuilder.with_capacity(array.len, array.null_count > 0, params.scratch_alloc);
+
+    if (array.validity) |validity| {
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            if (arrow.bitmap.get(validity.ptr, idx)) {
+                try builder.append_item(array.item_width);
+            } else {
+                try builder.append_null();
+            }
+        }
+    }
+
+    const l_array = try builder.finish(array.inner);
+
+    return try write_list_array(.i32, params, &l_array, data_section_size);
+}
+
+fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinaryArray, data_section_size: *u32) Error!header.Array {
+    if (array.len == 0) {
+        return empty_array();
+    }
+
+    var builder = try arrow.builder.BinaryBuilder.with_capacity(array.byte_width * array.len, array.len, array.null_count > 0, params.scratch_alloc);
+
+    var idx: u32 = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        try builder.append_option(arrow.get.get_fixed_size_binary_opt(array.data, array.byte_width, array.validity, idx));
+    }
+
+    const bin_array = try builder.finish();
+
+    return try write_binary_array(.i32, params, &bin_array, data_section_size);
 }
 
 fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListArray(index_t), data_section_size: *u32) Error!header.Array {
@@ -245,10 +309,16 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
 
     const buffers = try params.header_alloc.alloc(header.Buffer, 2);
     buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
-    buffers[1] = try write_buffer(index_t.to_type(), params, array.offsets[array.offset .. array.offset + array.len + 1], data_section_size);
+    const offsets = normalize_offsets(index_t, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
+    buffers[1] = try write_buffer(index_t.to_type(), params, offsets, data_section_size);
+
+    const start_offset = array.offsets[array.offset];
+    const end_offset = array.offsets[array.offset + array.len];
+    const child_len = end_offset - start_offset;
+    const inner = arrow.slice.slice(array.innet, start_offset, child_len);
 
     const children = try params.header_alloc.alloc(header.Array, 1);
-    children[0] = try write_array(params, array.inner, data_section_size);
+    children[0] = try write_array(params, &inner, data_section_size);
 
     return .{
         .buffers = buffers,
@@ -540,7 +610,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         const offsets_page_offset = data_section_size.*;
         const offsets_page_compressed_size = try write_page(.{
             .data_section = params.data_section,
-            .page = @ptrCast(array.offsets[idx - page_elem_count .. idx]),
+            .page = @ptrCast(try normalize_offsets(index_t, array.offsets[idx - page_elem_count .. idx], params.scratch_alloc)),
             .data_section_size = data_section_size,
             .compression = &offsets_compression,
             .compression_cfg = params.compression,
@@ -592,6 +662,21 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         .len = array.len,
         .null_count = array.null_count,
     };
+}
+
+fn normalize_offsets(comptime index_t: arr.IndexType, offsets: []const index_t.to_type(), scratch_alloc: Allocator) Error![]const index_t.to_type() {
+    if (offsets.len == 0) {
+        return &.{};
+    }
+
+    const base = offsets[0];
+    const normalized = try scratch_alloc.alloc(index_t.to_type(), offsets.len);
+
+    for (0..offsets.len) |idx| {
+        normalized[idx] = offsets[idx] - base;
+    }
+
+    return normalized;
 }
 
 fn binary_minmax(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t)) ?header.MinMax {
