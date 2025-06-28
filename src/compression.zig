@@ -3,15 +3,15 @@ const lz4hc = @cImport(@cInclude("lz4hc.h"));
 const lz4 = @cImport(@cInclude("lz4.h"));
 const zstd = @cImport(@cInclude("zstd.h"));
 
-pub const Compression = enum {
+pub const Compression = union(enum) {
     /// Memcopy
     no_compression,
     /// Default lz4 block compression
     lz4,
     /// High compression variant of LZ4, very slow compression speed but same decompression speed as regular lz4.
-    lz4_hc,
+    lz4_hc: u8,
     /// Default zstd block compression
-    zstd,
+    zstd: u8,
 };
 
 const Error = error{
@@ -32,8 +32,8 @@ fn lz4_compress(src: []const u8, dst: []u8) Error!usize {
     }
 }
 
-fn zstd_compress(src: []const u8, dst: []u8) Error!usize {
-    const res = zstd.ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, 8);
+fn zstd_compress(src: []const u8, dst: []u8, level: u8) Error!usize {
+    const res = zstd.ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, level);
     if (zstd.ZSTD_isError(res) == 0) {
         return res;
     } else {
@@ -41,8 +41,8 @@ fn zstd_compress(src: []const u8, dst: []u8) Error!usize {
     }
 }
 
-fn lz4_compress_hc(src: []const u8, dst: []u8) Error!usize {
-    const res = lz4hc.LZ4_compress_HC(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len), 9);
+fn lz4_compress_hc(src: []const u8, dst: []u8, level: u8) Error!usize {
+    const res = lz4hc.LZ4_compress_HC(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len), level);
     if (res != 0) {
         return @intCast(res);
     } else {
@@ -59,11 +59,11 @@ pub fn compress(src: []const u8, dst: []u8, algo: Compression) Error!usize {
         .lz4 => {
             return try lz4_compress(src, dst);
         },
-        .lz4_hc => {
-            return try lz4_compress_hc(src, dst);
+        .lz4_hc => |level| {
+            return try lz4_compress_hc(src, dst, level);
         },
-        .zstd => {
-            return try zstd_compress(src, dst);
+        .zstd => |level| {
+            return try zstd_compress(src, dst, level);
         },
     }
 }
