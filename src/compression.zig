@@ -14,8 +14,11 @@ pub const Compression = union(enum) {
     zstd: u8,
 };
 
-const Error = error{
+const CompressError = error{
     CompressFail,
+};
+
+const DecompressError = error{
     DecompressFail,
 };
 
@@ -23,34 +26,34 @@ pub fn compress_bound(input_size: usize) usize {
     return @max(zstd.ZSTD_compressBound(input_size), @as(usize, @intCast(lz4.LZ4_compressBound(@intCast(input_size)))), input_size);
 }
 
-fn lz4_compress(src: []const u8, dst: []u8) Error!usize {
+fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
     const lz4_size = lz4.LZ4_compress_default(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len));
     if (lz4_size != 0) {
         return @intCast(lz4_size);
     } else {
-        return Error.CompressFail;
+        return CompressError.CompressFail;
     }
 }
 
-fn zstd_compress(src: []const u8, dst: []u8, level: u8) Error!usize {
+fn zstd_compress(src: []const u8, dst: []u8, level: u8) CompressError!usize {
     const res = zstd.ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, level);
     if (zstd.ZSTD_isError(res) == 0) {
         return res;
     } else {
-        return Error.CompressFail;
+        return CompressError.CompressFail;
     }
 }
 
-fn lz4_compress_hc(src: []const u8, dst: []u8, level: u8) Error!usize {
+fn lz4_compress_hc(src: []const u8, dst: []u8, level: u8) CompressError!usize {
     const res = lz4hc.LZ4_compress_HC(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len), level);
     if (res != 0) {
         return @intCast(res);
     } else {
-        return Error.CompressFail;
+        return CompressError.CompressFail;
     }
 }
 
-pub fn compress(src: []const u8, dst: []u8, algo: Compression) Error!usize {
+pub fn compress(src: []const u8, dst: []u8, algo: Compression) CompressError!usize {
     switch (algo) {
         .no_compression => {
             @memcpy(dst[0..src.len], src);
@@ -68,26 +71,26 @@ pub fn compress(src: []const u8, dst: []u8, algo: Compression) Error!usize {
     }
 }
 
-fn zstd_decompress(src: []const u8, dst: []u8) Error!void {
+fn zstd_decompress(src: []const u8, dst: []u8) DecompressError!void {
     const res = zstd.ZSTD_decompress(dst.ptr, dst.len, src, src.len);
     if (zstd.ZSTD_isError(res) == 0) {
         std.debug.assert(res == dst.len);
     } else {
-        return Error.DecompressFail;
+        return DecompressError.DecompressFail;
     }
 }
 
-fn lz4_decompress(src: []const u8, dst: []u8) Error!void {
+fn lz4_decompress(src: []const u8, dst: []u8) DecompressError!void {
     const res = lz4.LZ4_decompress_safe(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len));
     if (res >= 0) {
         const decomp_len: usize = @intCast(res);
         std.debug.assert(decomp_len == dst.len);
     } else {
-        return Error.DecompressFail;
+        return DecompressError.DecompressFail;
     }
 }
 
-pub fn decompress(src: []const u8, dst: []u8, algo: Compression) Error!usize {
+pub fn decompress(src: []const u8, dst: []u8, algo: Compression) DecompressError!usize {
     switch (algo) {
         .no_compression => {
             std.debug.assert(src.len == dst.len);

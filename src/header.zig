@@ -90,7 +90,7 @@ pub const Header = struct {
 
 /// Ascending sort hashes and deduplicate
 fn sort_and_dedup_hashes(hashes: []u64) []u64 {
-    std.mem.sort(u64, hashes, {}, std.sort.asc(u64));
+    std.mem.sortUnstable(u64, hashes, {}, std.sort.asc(u64));
     var write_idx: usize = 0;
 
     for (hashes[1..]) |hash| {
