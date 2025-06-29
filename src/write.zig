@@ -122,74 +122,129 @@ pub fn write(params: Write) Error!header.Header {
 fn apply_dict(dict_array: *const arr.BinaryArray, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
     switch (array.*) {
         .binary => |*a| {
-            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32).get_item, dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_array(.i32, dict_array, a, scratch_alloc);
         },
         .large_binary => |*a| {
-            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64).get_item, dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_array(.i64, dict_array, a, scratch_alloc);
         },
         .binary_view => |*a| {
-            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_view_array(dict_array, a, scratch_alloc);
         },
         .fixed_size_binary => |*a| {
-            return apply_dict_to_array(arr.FixedSizeBinaryArray, get_item_fixed_size_binary, dict_array, a, scratch_alloc);
+            return try apply_dict_to_fixed_size_binary_array(dict_array, a, scratch_alloc);
         },
         .utf8 => |*a| {
-            return apply_dict_to_array(arr.BinaryArray, GetItemBinary(.i32), dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_array(.i32, dict_array, &a.inner, scratch_alloc);
         },
         .large_utf8 => |*a| {
-            return apply_dict_to_array(arr.LargeBinaryArray, GetItemBinary(.i64), dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_array(.i64, dict_array, &a.inner, scratch_alloc);
         },
         .utf8_view => |*a| {
-            return apply_dict_to_array(arr.BinaryViewArray, get_item_binary_view, dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_view_array(dict_array, &a.inner, scratch_alloc);
         },
         else => return Error.NonBinaryArrayWithDict,
     }
 }
 
-fn GetItemBinary(comptime index_t: arr.IndexType) type {
-    return struct {
-        fn get_item(a: *const arr.GenericBinaryArray(index_t), idx: u32) ?[]const u8 {
-            return arrow.get.get_binary_opt(index_t, a.data, a.offsets, a.validity, idx);
-        }
+fn apply_dict_to_binary_view_array(dict_array: *const arr.BinaryArray, array: *const arr.BinaryViewArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
+    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
-}
-fn get_item_binary_view(a: *const arr.BinaryViewArray, idx: u32) ?[]const u8 {
-    return arrow.get.get_binary_view_opt(a.buffers, a.views, a.validity, idx);
-}
-fn get_item_fixed_size_binary(a: *const arr.FixedSizeBinaryArray, idx: u32) ?[]const u8 {
-    return arrow.get.get_fixed_size_binary_opt(a.data, a.byte_width, a.validity, idx);
-}
 
-fn apply_dict_to_array(comptime ArrayT: type, comptime get_item: fn (a: *const ArrayT, idx: u32) ?[]const u8, dict_elems: *const arr.BinaryArray, array: *const ArrayT, scratch_alloc: Allocator) usize {
-    var builder = try arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc);
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
 
-    var item: u32 = array.offset;
-    while (item < array.offset + array.len) : (item += 1) {
-        if (get_item(array, item)) |s| {
-            var dict_elem_idx: u32 = dict_elems.offset;
-            while (dict_elem_idx < dict_elems.offset + dict_elems.len) : (dict_elem_idx += 1) {
-                const dict_elem = arrow.get.get_binary(.i32, dict_elems.data, dict_elems.offsets, dict_elem_idx);
-
-                if (std.mem.eql(dict_elem, s)) {
-                    try builder.append_value(dict_elem_idx);
-                    break;
-                }
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
+                builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
             } else {
-                unreachable;
+                builder.append_null() catch unreachable;
             }
-        } else {
-            try builder.append_null();
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
+            builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
         }
     }
 
-    return try builder.finish();
+    return (builder.finish() catch unreachable);
+}
+
+fn apply_dict_to_fixed_size_binary_array(dict_array: *const arr.BinaryArray, array: *const arr.FixedSizeBinaryArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
+    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
+                builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
+            } else {
+                builder.append_null() catch unreachable;
+            }
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
+            builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
+        }
+    }
+
+    return (builder.finish() catch unreachable);
+}
+
+fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *const arr.BinaryArray, array: *const arr.GenericBinaryArray(index_t), scratch_alloc: Allocator) Error!arr.UInt32Array {
+    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
+                builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
+            } else {
+                builder.append_null() catch unreachable;
+            }
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
+            builder.append_value(find_dict_idx(dict_array, s) orelse unreachable) catch unreachable;
+        }
+    }
+
+    return (builder.finish() catch unreachable);
+}
+
+fn find_dict_idx(dict_array: *const arr.BinaryArray, val: []const u8) ?u32 {
+    var idx: u32 = dict_array.offset;
+    while (idx < dict_array.offset + dict_array.len) : (idx += 1) {
+        const dict_elem = arrow.get.get_binary(.i32, dict_array.data.ptr, dict_array.offsets.ptr, idx);
+
+        if (std.mem.eql(u8, val, dict_elem)) {
+            return idx;
+        }
+    }
+
+    return null;
 }
 
 fn find_dict(dicts: []const schema.DictSchema, dict_elements: []const arr.BinaryArray, table_index: usize, field_index: usize) ?*const arr.BinaryArray {
     for (dicts, 0..) |dict, dict_idx| {
         for (dict.members) |member| {
             if (member.table_index == table_index and member.field_index == field_index) {
-                return dict_elements[dict_idx];
+                return &dict_elements[dict_idx];
             }
         }
     }
@@ -225,7 +280,7 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32) 
         .timestamp => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size),
         .interval_year_month => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size),
         .interval_day_time => |*a| return try write_primitive_array([2]i32, params, &a.inner, data_section_size),
-        .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, &a.inner, data_section_size),
+        .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, params, &a.inner, data_section_size),
         .list => |*a| return try write_list_array(.i32, params, a, data_section_size),
         .struct_ => |*a| return try write_struct_array(params, a, data_section_size),
         .dense_union => |*a| return try write_dense_union_array(params, a, data_section_size),
@@ -325,20 +380,22 @@ fn write_fixed_size_list_array(params: Write, array: *const arr.FixedSizeListArr
         return empty_array();
     }
 
-    var builder = try arrow.builder.ListBuilder.with_capacity(array.len, array.null_count > 0, params.scratch_alloc);
+    var builder = arrow.builder.ListBuilder.with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
 
     if (array.validity) |validity| {
         var idx: u32 = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             if (arrow.bitmap.get(validity.ptr, idx)) {
-                try builder.append_item(array.item_width);
+                builder.append_item(array.item_width) catch unreachable;
             } else {
-                try builder.append_null();
+                builder.append_null() catch unreachable;
             }
         }
     }
 
-    const l_array = try builder.finish(array.inner);
+    const l_array = builder.finish(array.inner) catch unreachable;
 
     return try write_list_array(.i32, params, &l_array, data_section_size);
 }
@@ -348,14 +405,17 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
         return empty_array();
     }
 
-    var builder = try arrow.builder.BinaryBuilder.with_capacity(array.byte_width * array.len, array.len, array.null_count > 0, params.scratch_alloc);
+    const byte_width: u32 = @intCast(array.byte_width);
+    var builder = arrow.builder.BinaryBuilder.with_capacity(byte_width * array.len, array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
 
     var idx: u32 = array.offset;
     while (idx < array.offset + array.len) : (idx += 1) {
-        try builder.append_option(arrow.get.get_fixed_size_binary_opt(array.data, array.byte_width, array.validity, idx));
+        builder.append_option(arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width.ptr, array.validity, idx)) catch unreachable;
     }
 
-    const bin_array = try builder.finish();
+    const bin_array = builder.finish() catch unreachable;
 
     return try write_binary_array(.i32, params, &bin_array, data_section_size);
 }
@@ -462,6 +522,11 @@ fn max_of(comptime T: type) T {
     return comptime switch (@typeInfo(T)) {
         .float => std.math.floatMax(T),
         .int => std.math.maxInt(T),
+        .array => |a_info| arr_case: {
+            var a: T = undefined;
+            @memset(&a, std.math.maxInt(a_info.child));
+            break :arr_case a;
+        },
         else => unreachable,
     };
 }
@@ -470,6 +535,11 @@ fn min_of(comptime T: type) T {
     return comptime switch (@typeInfo(T)) {
         .float => std.math.floatMax(T),
         .int => std.math.maxInt(T),
+        .array => arr_case: {
+            var a: T = undefined;
+            @memset(&a, 0);
+            break :arr_case a;
+        },
         else => unreachable,
     };
 }
@@ -483,7 +553,7 @@ fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u
 
         var i: u32 = offset;
         while (i < offset + len) : (i += 1) {
-            if (arrow.bitmap.get(validity, i)) {
+            if (arrow.bitmap.get(validity.ptr, i)) {
                 arrow.bitmap.set(x, i);
             }
         }
@@ -529,6 +599,16 @@ fn empty_buffer() header.Buffer {
     };
 }
 
+fn minmax_val_to_binary(comptime T: type, val: T) [header.MinMaxLen]u8 {
+    var out: [header.MinMaxLen]u8 = undefined;
+    @memset(&out, 0);
+
+    const bytes: [@sizeOf(T)]u8 = @bitCast(val);
+    @memcpy(out[0..@sizeOf(T)], &bytes);
+
+    return out;
+}
+
 fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
     if (buffer.len == 0) {
         return empty_buffer();
@@ -547,7 +627,7 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
         var max: T = max_of(T);
 
         var page_size: usize = 0;
-        var page_elem_count: usize = 0;
+        var page_elem_count: u32 = 0;
 
         while (page_size < target_page_size and idx < buffer.len) : (idx += 1) {
             const elem = buffer[idx];
@@ -563,7 +643,7 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
             continue;
         }
 
-        const page = buffer[idx - page_elem_count .. idx];
+        const page: []const u8 = @ptrCast(buffer[idx - page_elem_count .. idx]);
         std.debug.assert(page.len == page_elem_count);
 
         const page_offset = data_section_size.*;
@@ -577,27 +657,29 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
 
         // Write header info to arrays
         try pages.append(params.scratch_alloc, header.Page{
-            .uncompressed_size = page_size,
-            .compressed_size = compressed_size,
+            .uncompressed_size = @intCast(page_size),
+            .compressed_size = @intCast(compressed_size),
             .offset = page_offset,
         });
         try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
-        try minmax.append(params.scratch_alloc, header.MinMax{ .min = min, .max = max });
+        try minmax.append(params.scratch_alloc, header.MinMax{ .min = minmax_val_to_binary(T, min), .max = minmax_val_to_binary(T, max) });
     }
 
-    std.debug.assert(pages.len == row_index_ends.len and pages.len == minmax.len);
+    std.debug.assert(pages.items.len == row_index_ends.items.len and pages.items.len == minmax.items.len);
 
-    const out = header.Buffer{
-        .pages = try params.header_alloc.alloc(header.Page, pages.items.len),
+    const out_pages = try params.header_alloc.alloc(header.Page, pages.items.len);
+    const out_minmax = try params.header_alloc.alloc(header.MinMax, minmax.items.len);
+    const out_row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len);
+    @memcpy(out_pages, pages.items);
+    @memcpy(out_row_index_ends, row_index_ends.items);
+    @memcpy(out_minmax, minmax.items);
+
+    return header.Buffer{
         .compression = compr orelse .no_compression,
-        .minmax = try params.header_alloc.alloc(header.MinMax, minmax.items.len),
-        .row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len),
+        .pages = out_pages,
+        .minmax = out_minmax,
+        .row_index_ends = out_row_index_ends,
     };
-    @memcpy(&out.pages, pages.items);
-    @memcpy(&out.row_index_ends, row_index_ends.items);
-    @memcpy(&out.minmax, minmax.items);
-
-    return out;
 }
 
 fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericBinaryArray(index_t), data_section_size: *u32) Error!header.Array {
@@ -622,7 +704,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         @memset(max, 0);
 
         var data_page_size: usize = 0;
-        var page_elem_count: usize = 0;
+        var page_elem_count: u32 = 0;
 
         while (data_page_size < target_page_size and idx < array.len + array.offset) : (idx += 1) {
             const elem = arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, array.validity.ptr);
@@ -676,13 +758,13 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
 
         // Write header info to arrays
         try data_pages.append(params.scratch_alloc, header.Page{
-            .uncompressed_size = data_page_size,
-            .compressed_size = data_page_compressed_size,
+            .uncompressed_size = @intCast(data_page_size),
+            .compressed_size = @intCast(data_page_compressed_size),
             .offset = data_page_offset,
         });
         try offsets_pages.append(params.scratch_alloc, header.Page{
-            .uncompressed_size = @sizeOf(index_t.to_type()) * (page_elem_count + 1),
-            .compressed_size = offsets_page_compressed_size,
+            .uncompressed_size = @intCast(@sizeOf(index_t.to_type()) * (page_elem_count + 1)),
+            .compressed_size = @intCast(offsets_page_compressed_size),
             .offset = offsets_page_offset,
         });
         try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
@@ -857,36 +939,109 @@ fn count_array_to_dict(array: *const arr.Array) usize {
 fn push_array_to_dict(array: *const arr.Array, write_idx: usize, elems: [][]const u8) Error!usize {
     switch (array.*) {
         .binary => |*a| {
-            return push_array_to_dict_impl(arr.BinaryArray, GetItemBinary(.i32), a, write_idx, elems);
+            return push_binary_to_dict(.i32, a, write_idx, elems);
         },
         .large_binary => |*a| {
-            return push_array_to_dict_impl(arr.LargeBinaryArray, GetItemBinary(.i64), a, write_idx, elems);
+            return push_binary_to_dict(.i64, a, write_idx, elems);
         },
         .binary_view => |*a| {
-            return push_array_to_dict_impl(arr.BinaryViewArray, get_item_binary_view, a, write_idx, elems);
+            return push_binary_view_to_dict(a, write_idx, elems);
         },
         .fixed_size_binary => |*a| {
-            return push_array_to_dict_impl(arr.FixedSizeBinaryArray, get_item_fixed_size_binary, &a.inner, write_idx, elems);
+            return push_fixed_size_binary_to_dict(a, write_idx, elems);
         },
         .utf8 => |*a| {
-            return push_array_to_dict_impl(arr.BinaryArray, GetItemBinary(.i32), &a.inner, write_idx, elems);
+            return push_binary_to_dict(.i32, &a.inner, write_idx, elems);
         },
         .large_utf8 => |*a| {
-            return push_array_to_dict_impl(arr.LargeBinaryArray, GetItemBinary(.i64), &a.inner, write_idx, elems);
+            return push_binary_to_dict(.i64, &a.inner, write_idx, elems);
         },
         .utf8_view => |*a| {
-            return push_array_to_dict_impl(arr.BinaryViewArray, get_item_binary_view, &a.inner, write_idx, elems);
+            return push_binary_view_to_dict(&a.inner, write_idx, elems);
         },
         else => return Error.NonBinaryArrayWithDict,
     }
 }
 
-fn push_array_to_dict_impl(comptime ArrayT: type, comptime get_item: fn (a: *const ArrayT, idx: u32) ?[]const u8, array: *const ArrayT, write_idx: usize, out: [][]const u8) usize {
+fn push_binary_to_dict(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t), write_idx: usize, out: [][]const u8) usize {
+    if (array.len == 0) {
+        return write_idx;
+    }
+
     var wi = write_idx;
 
-    var item: u32 = array.offset;
-    while (item < array.offset + array.len) : (item += 1) {
-        if (get_item(array, item)) |s| {
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
+                out[wi] = s;
+                wi += 1;
+            }
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
+            out[wi] = s;
+            wi += 1;
+        }
+    }
+
+    return wi;
+}
+
+fn push_binary_view_to_dict(array: *const arr.BinaryViewArray, write_idx: usize, out: [][]const u8) usize {
+    if (array.len == 0) {
+        return write_idx;
+    }
+
+    var wi = write_idx;
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
+                out[wi] = s;
+                wi += 1;
+            }
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
+            out[wi] = s;
+            wi += 1;
+        }
+    }
+
+    return wi;
+}
+
+fn push_fixed_size_binary_to_dict(array: *const arr.FixedSizeBinaryArray, write_idx: usize, out: [][]const u8) usize {
+    if (array.len == 0) {
+        return write_idx;
+    }
+
+    var wi = write_idx;
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
+                out[wi] = s;
+                wi += 1;
+            }
+        }
+    } else {
+        var item: u32 = array.offset;
+        while (item < array.offset + array.len) : (item += 1) {
+            const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
             out[wi] = s;
             wi += 1;
         }
