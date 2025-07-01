@@ -15,7 +15,6 @@ comptime {
 }
 
 const header = @import("./header.zig");
-const chunk = @import("./chunk.zig");
 const schema = @import("./schema.zig");
 const compression = @import("./compression.zig");
 
@@ -33,8 +32,8 @@ pub const Error = error{
 };
 
 pub const Write = struct {
-    /// Input data and schema.
-    chunk: *const chunk.Chunk,
+    schema: *const schema.DatasetSchema,
+    tables: []const []const arr.Array,
     /// Allocator that is used for allocating any dynamic memory relating to outputted header.
     /// Lifetime of the header is tied to this allocator after creation.
     header_alloc: Allocator,
@@ -52,24 +51,24 @@ pub const Write = struct {
 pub fn write(params: Write) Error!header.Header {
     var data_section_size: u32 = 0;
 
-    const num_dicts = params.chunk.schema.dicts.len;
+    const num_dicts = params.schema.dicts.len;
     const dicts = try params.header_alloc.alloc(?header.Dict, num_dicts);
-    const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
+    const tables = try params.header_alloc.alloc(header.Table, params.tables.len);
 
     const dict_arrays = try params.scratch_alloc.alloc(arr.BinaryArray, num_dicts);
 
-    for (params.chunk.schema.dicts, 0..) |dict, dict_idx| {
+    for (params.schema.dicts, 0..) |dict, dict_idx| {
         var num_elems: usize = 0;
 
         for (dict.members) |member| {
-            num_elems += try count_array_to_dict(&params.chunk.tables[member.table_index][member.field_index]);
+            num_elems += try count_array_to_dict(&params.tables[member.table_index][member.field_index]);
         }
 
         var elems = try params.scratch_alloc.alloc([]const u8, num_elems);
 
         var write_idx: usize = 0;
         for (dict.members) |member| {
-            const array = &params.chunk.tables[member.table_index][member.field_index];
+            const array = &params.tables[member.table_index][member.field_index];
             write_idx = try push_array_to_dict(array, write_idx, elems);
         }
 
@@ -95,16 +94,16 @@ pub fn write(params: Write) Error!header.Header {
                 .filter = filter,
             };
         } else {
-            std.log.warn("{}", .{params.chunk.schema});
+            std.log.warn("{}", .{params.schema});
             dicts[dict_idx] = null;
         }
     }
 
-    for (params.chunk.tables, 0..) |table, table_idx| {
+    for (params.tables, 0..) |table, table_idx| {
         const fields = try params.header_alloc.alloc(header.Array, table.len);
 
         for (table, 0..) |*array, field_idx| {
-            if (find_dict(params.chunk.schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
+            if (find_dict(params.schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
                 const dicted_array = try apply_dict(dict_arr, array, params.scratch_alloc);
                 fields[field_idx] = try write_primitive_array(u32, params, &dicted_array, &data_section_size);
             } else {
@@ -1160,15 +1159,6 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
     else
         &.{};
 
-    const data = chunk.Chunk{
-        .tables = &tables,
-        .schema = schema.DatasetSchema{
-            .table_names = table_names,
-            .dicts = dicts,
-            .tables = &table_schemas,
-        },
-    };
-
     const data_section = try testing.allocator.alloc(u8, 1 << 22);
     defer testing.allocator.free(data_section);
 
@@ -1178,8 +1168,14 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
     var header_arena = ArenaAllocator.init(testing.allocator);
     defer header_arena.deinit();
 
-    try data.schema.validate();
-    try testing.expect(data.schema.check(data.tables));
+    const sch = schema.DatasetSchema{
+        .table_names = table_names,
+        .dicts = dicts,
+        .tables = &table_schemas,
+    };
+
+    try sch.validate();
+    try testing.expect(sch.check(&tables));
 
     const head = try write(.{
         .data_section = data_section,
@@ -1187,7 +1183,8 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         .page_size_kb = 1 << 20,
         .header_alloc = header_arena.allocator(),
         .scratch_alloc = scratch_arena.allocator(),
-        .chunk = &data,
+        .tables = &tables,
+        .schema = &sch,
     });
 
     _ = head;
