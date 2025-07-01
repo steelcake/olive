@@ -17,8 +17,8 @@
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.8.tar.gz",
-            .hash = "arrow-0.0.8-ZFEaqKLhAwCIll2q76FjlpMMCY6IKAiXCL7jroMbRFXV",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.9.tar.gz",
+            .hash = "arrow-0.0.9-ZFEaqPT_AwAW4BgNTC9mXHsCfLJLZ6Gs5bKcyZQKmfBq",
         },
     },
     .paths = .{

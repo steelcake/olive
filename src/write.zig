@@ -1087,11 +1087,54 @@ fn push_fixed_size_binary_to_dict(array: *const arr.FixedSizeBinaryArray, write_
     return wi;
 }
 
-fn run_test_impl(id: u8) !void {
-    var array_arena = ArenaAllocator.init(testing.allocator);
-    defer array_arena.deinit();
+fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
+    var tables: [3][]const arr.Array = undefined;
 
-    const array = try arrow.test_array.make_array(id, array_arena.allocator());
+    for (0..3) |idx| {
+        const base = (id + idx) * 3;
+        const arr0 = arrays[base % arrow.test_array.NUM_ARRAYS];
+        const arr1 = arrays[(base + 1) % arrow.test_array.NUM_ARRAYS];
+        const arr2 = arrays[(base + 2) % arrow.test_array.NUM_ARRAYS];
+
+        tables[idx] = &.{
+            arr0, arr1, arr2,
+        };
+    }
+
+    const table_names = &.{ "a", "b", "c" };
+
+    const field_names = &.{ "q", "w", "e" };
+
+    var dt_arena = ArenaAllocator.init(testing.allocator);
+    defer dt_arena.deinit();
+    const dt_alloc = dt_arena.allocator();
+
+    var data_types: [3][]const arrow.data_type.DataType = undefined;
+
+    for (0..3) |idx| {
+        data_types[idx] = &.{
+            try arrow.data_type.get_data_type(&tables[idx][0], dt_alloc),
+            try arrow.data_type.get_data_type(&tables[idx][1], dt_alloc),
+            try arrow.data_type.get_data_type(&tables[idx][2], dt_alloc),
+        };
+    }
+
+    var table_schemas: [3]schema.TableSchema = undefined;
+    for (0..3) |idx| {
+        table_schemas[idx] = .{
+            .field_names = field_names,
+            .data_types = data_types[idx],
+        };
+    }
+
+    const data = chunk.Chunk{
+        .tables = &tables,
+        .schema = schema.DatasetSchema{
+            .table_names = table_names,
+            .dicts = &.{},
+            .tables = &table_schemas,
+        },
+    };
 
     const data_section = try testing.allocator.alloc(u8, 1 << 22);
     defer testing.allocator.free(data_section);
@@ -1101,15 +1144,6 @@ fn run_test_impl(id: u8) !void {
 
     var header_arena = ArenaAllocator.init(testing.allocator);
     defer header_arena.deinit();
-
-    const data = chunk.Chunk{
-        .tables = &.{&.{array}},
-        .schema = schema.DatasetSchema{
-            .table_names = &.{"anan"},
-            .dicts = &.{},
-            .tables = &.{},
-        },
-    };
 
     try data.schema.validate();
     try testing.expect(data.schema.check(data.tables));
@@ -1126,15 +1160,25 @@ fn run_test_impl(id: u8) !void {
     _ = head;
 }
 
-fn run_test(id: u8) !void {
-    return run_test_impl(id) catch |e| err: {
+fn run_test(arrays: []const arr.Array, id: usize) !void {
+    return run_test_impl(arrays, id) catch |e| err: {
         std.log.err("failed test id: {}", .{id});
         break :err e;
     };
 }
 
 test "smoke test write" {
+    var array_arena = ArenaAllocator.init(testing.allocator);
+    defer array_arena.deinit();
+    const array_alloc = array_arena.allocator();
+
+    var arrays: [arrow.test_array.NUM_ARRAYS]arr.Array = undefined;
+
+    for (0..arrow.test_array.NUM_ARRAYS) |idx| {
+        arrays[idx] = try arrow.test_array.make_array(@intCast(idx), array_alloc);
+    }
+
     for (0..arrow.test_array.NUM_ARRAYS) |i| {
-        try run_test(@intCast(i));
+        try run_test(&arrays, i);
     }
 }
