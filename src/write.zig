@@ -95,6 +95,7 @@ pub fn write(params: Write) Error!header.Header {
                 .filter = filter,
             };
         } else {
+            std.log.warn("{}", .{params.chunk.schema});
             dicts[dict_idx] = null;
         }
     }
@@ -1154,11 +1155,16 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         }
     }
 
+    const dicts = if (num_dict_members > 0)
+        &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true }}
+    else
+        &.{};
+
     const data = chunk.Chunk{
         .tables = &tables,
         .schema = schema.DatasetSchema{
             .table_names = table_names,
-            .dicts = &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true }},
+            .dicts = dicts,
             .tables = &table_schemas,
         },
     };
