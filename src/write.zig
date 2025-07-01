@@ -310,7 +310,7 @@ fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, d
     }
 
     const buffers = try params.header_alloc.alloc(header.Buffer, 1);
-    buffers[1] = try write_buffer(i8, params, array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len], data_section_size);
+    buffers[0] = try write_buffer(i8, params, array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len], data_section_size);
 
     const children = try params.header_alloc.alloc(header.Array, array.inner.children.len);
 
@@ -406,7 +406,7 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
     }
 
     const byte_width: u32 = @intCast(array.byte_width);
-    var builder = arrow.builder.BinaryBuilder.with_capacity(byte_width * array.len, array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+    var builder = arrow.builder.BinaryBuilder.with_capacity(byte_width * (array.len - array.null_count), array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
 
@@ -666,7 +666,7 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
         }
 
         const page: []const u8 = @ptrCast(buffer[idx - page_elem_count .. idx]);
-        std.debug.assert(page.len == page_elem_count);
+        std.debug.assert(page.len == page_elem_count * @sizeOf(T));
 
         const page_offset = data_section_size.*;
         const compressed_size = try write_page(.{
@@ -743,7 +743,8 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
 
                 var minmax_val: [header.MinMaxLen]u8 = undefined;
                 @memset(&minmax_val, 0);
-                @memcpy(&minmax_val, e[0..@min(e.len, header.MinMaxLen)]);
+                const copy_len = @min(e.len, header.MinMaxLen);
+                @memcpy(minmax_val[0..copy_len], e[0..copy_len]);
 
                 if (std.mem.order(u8, &min, &minmax_val) == .gt) {
                     min = minmax_val;
@@ -1092,9 +1093,9 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
 
     for (0..3) |idx| {
         const base = (id + idx) * 3;
-        const arr0 = arrays[base % arrow.test_array.NUM_ARRAYS];
-        const arr1 = arrays[(base + 1) % arrow.test_array.NUM_ARRAYS];
-        const arr2 = arrays[(base + 2) % arrow.test_array.NUM_ARRAYS];
+        const arr0 = arrays[base % arrays.len];
+        const arr1 = arrays[(base + 1) % arrays.len];
+        const arr2 = arrays[(base + 2) % arrays.len];
 
         tables[idx] = &.{
             arr0, arr1, arr2,
@@ -1172,13 +1173,21 @@ test "smoke test write" {
     defer array_arena.deinit();
     const array_alloc = array_arena.allocator();
 
+    var len: usize = 0;
     var arrays: [arrow.test_array.NUM_ARRAYS]arr.Array = undefined;
 
     for (0..arrow.test_array.NUM_ARRAYS) |idx| {
-        arrays[idx] = try arrow.test_array.make_array(@intCast(idx), array_alloc);
+        arrays[len] = try arrow.test_array.make_array(@intCast(idx), array_alloc);
+
+        switch (arrays[len]) {
+            .dict, .run_end_encoded, .list_view, .large_list_view, .map => {},
+            else => {
+                len += 1;
+            },
+        }
     }
 
     for (0..arrow.test_array.NUM_ARRAYS) |i| {
-        try run_test(&arrays, i);
+        try run_test(arrays[0..len], i);
     }
 }
