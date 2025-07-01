@@ -1,3 +1,11 @@
+const native_endian = @import("builtin").target.cpu.arch.endian();
+
+comptime {
+    if (native_endian != .little) {
+        @compileError("olive only supports little-endian architectures.");
+    }
+}
+
 pub const write = @import("./write.zig");
 pub const schema = @import("./schema.zig");
 pub const header = @import("./header.zig");

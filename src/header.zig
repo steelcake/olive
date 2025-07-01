@@ -2,21 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
+const arrow = @import("arrow");
 
 const Compression = @import("./compression.zig").Compression;
-
-/// Number of bytes for MinMax values
-pub const MinMaxLen = 32;
-
-/// 32 byte prefixes of min/max values a page has.
-/// Integral values are encoded as little endian.
-/// Null values are not included in minmax.
-///
-/// min will be {u8.MAX} * 32 and max will be {0} * 32 if there wasn't any non-null values in the array
-pub const MinMax = struct {
-    min: [MinMaxLen]u8,
-    max: [MinMaxLen]u8,
-};
 
 pub const Page = struct {
     /// Offset of the page start inside the data section of file
@@ -24,6 +12,23 @@ pub const Page = struct {
     uncompressed_size: u32,
     /// Compressed size of the page, equals uncompressed_size if parent buffer.compression is set to `.no_compression`
     compressed_size: u32,
+};
+
+pub const MinMax = union(enum) {
+    i8: struct { i8, i8 },
+    i16: struct { i16, i16 },
+    i32: struct { i32, i32 },
+    i64: struct { i64, i64 },
+    i128: struct { i128, i128 },
+    i256: struct { i256, i256 },
+    u8: struct { u8, u8 },
+    u16: struct { u16, u16 },
+    u32: struct { u32, u32 },
+    u64: struct { u64, u64 },
+    f16: struct { f16, f16 },
+    f32: struct { f32, f32 },
+    f64: struct { f64, f64 },
+    binary: struct { []const u8, []const u8 },
 };
 
 pub const Buffer = struct {

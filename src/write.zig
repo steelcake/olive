@@ -6,14 +6,6 @@ const ArrayList = std.ArrayListUnmanaged;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const testing = std.testing;
 
-const native_endian = @import("builtin").target.cpu.arch.endian();
-
-comptime {
-    if (native_endian != .little) {
-        @compileError("olive only supports little-endian architectures.");
-    }
-}
-
 const header = @import("./header.zig");
 const schema = @import("./schema.zig");
 const compression = @import("./compression.zig");
@@ -542,22 +534,6 @@ fn empty_array() header.Array {
     };
 }
 
-fn max_of(comptime T: type) T {
-    return comptime switch (@typeInfo(T)) {
-        .float => std.math.floatMax(T),
-        .int => std.math.maxInt(T),
-        else => unreachable,
-    };
-}
-
-fn min_of(comptime T: type) T {
-    return comptime switch (@typeInfo(T)) {
-        .float => std.math.floatMax(T),
-        .int => std.math.maxInt(T),
-        else => unreachable,
-    };
-}
-
 fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u8, data_section_size: *u32) Error!header.Buffer {
     const validity = validity_opt orelse return empty_buffer();
 
@@ -613,27 +589,7 @@ fn empty_buffer() header.Buffer {
     };
 }
 
-fn minmax_val_to_binary(comptime T: type, val: T) [header.MinMaxLen]u8 {
-    var out: [header.MinMaxLen]u8 = undefined;
-    @memset(&out, 0);
-
-    const bytes: [@sizeOf(T)]u8 = @bitCast(val);
-    @memcpy(out[0..@sizeOf(T)], &bytes);
-
-    return out;
-}
-
-fn int_or_float(comptime T: type) bool {
-    return comptime switch (@typeInfo(T)) {
-        .int => true,
-        .float => true,
-        else => false,
-    };
-}
-
-fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
-    const is_int_or_float = comptime int_or_float(T);
-
+fn write_buffer(comptime calculate_minmax: bool, comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
     if (buffer.len == 0) {
         return empty_buffer();
     }
@@ -643,26 +599,17 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
 
     var pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
     var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
-    var minmax: ArrayList(header.MinMax) = if (is_int_or_float) try ArrayList(header.MinMax).initCapacity(params.scratch_alloc, 128) else undefined;
+    var minmax: ArrayList(header.MinMax) = if (calculate_minmax) try ArrayList(header.MinMax).initCapacity(params.scratch_alloc, 128) else undefined;
 
     var idx: u32 = 0;
     while (idx < buffer.len) {
-        var min: T = comptime if (is_int_or_float) min_of(T) else undefined;
-        var max: T = comptime if (is_int_or_float) max_of(T) else undefined;
-
         var page_size: usize = 0;
         var page_elem_count: u32 = 0;
 
+        // TODO: don't need to loop like this here, can just calculate
         while (page_size < target_page_size and idx < buffer.len) : (idx += 1) {
-            const elem = buffer[idx];
-
             page_elem_count += 1;
             page_size += @sizeOf(T);
-
-            if (is_int_or_float) {
-                min = @min(min, elem);
-                max = @max(max, elem);
-            }
         }
 
         if (page_elem_count == 0) {
@@ -688,7 +635,7 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
             .offset = page_offset,
         });
         try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
-        if (is_int_or_float) {
+        if (calculate_minmax) {
             try minmax.append(params.scratch_alloc, header.MinMax{ .min = minmax_val_to_binary(T, min), .max = minmax_val_to_binary(T, max) });
         }
     }
