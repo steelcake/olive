@@ -84,12 +84,16 @@ pub const Dict = struct {
 
 pub const Header = struct {
     tables: []const Table,
-    dicts: []const Dict,
+    dicts: []const ?Dict,
     data_section_size: u32,
 };
 
 /// Ascending sort hashes and deduplicate
 fn sort_and_dedup_hashes(hashes: []u64) []u64 {
+    if (hashes.len == 0) {
+        return hashes;
+    }
+
     std.mem.sortUnstable(u64, hashes, {}, std.sort.asc(u64));
     var write_idx: usize = 0;
 

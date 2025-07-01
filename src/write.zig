@@ -53,7 +53,7 @@ pub fn write(params: Write) Error!header.Header {
     var data_section_size: u32 = 0;
 
     const num_dicts = params.chunk.schema.dicts.len;
-    const dicts = try params.header_alloc.alloc(header.Dict, num_dicts);
+    const dicts = try params.header_alloc.alloc(?header.Dict, num_dicts);
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
     const dict_arrays = try params.scratch_alloc.alloc(arr.BinaryArray, num_dicts);
@@ -82,17 +82,21 @@ pub fn write(params: Write) Error!header.Header {
 
         dict_arrays[dict_idx] = dict_array;
 
-        const filter = if (dict.has_filter)
-            header.Filter.construct(elems, params.scratch_alloc, params.header_alloc) catch |e| {
-                if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-            }
-        else
-            null;
+        if (num_elems > 0) {
+            const filter = if (dict.has_filter)
+                header.Filter.construct(elems, params.scratch_alloc, params.header_alloc) catch |e| {
+                    if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+                }
+            else
+                null;
 
-        dicts[dict_idx] = header.Dict{
-            .data = data,
-            .filter = filter,
-        };
+            dicts[dict_idx] = header.Dict{
+                .data = data,
+                .filter = filter,
+            };
+        } else {
+            dicts[dict_idx] = null;
+        }
     }
 
     for (params.chunk.tables, 0..) |table, table_idx| {
@@ -934,6 +938,10 @@ fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {
 
 /// Ascending sort elements and deduplicate
 fn sort_and_dedup(data: [][]const u8) [][]const u8 {
+    if (data.len == 0) {
+        return data;
+    }
+
     std.mem.sortUnstable([]const u8, data, {}, stringLessThan);
     var write_idx: usize = 0;
 
@@ -1128,11 +1136,29 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         };
     }
 
+    var dict_members: [9]schema.DictMember = undefined;
+    var num_dict_members: usize = 0;
+
+    for (0..3) |table_idx| {
+        for (0..3) |field_idx| {
+            switch (tables[table_idx][field_idx]) {
+                .fixed_size_binary, .binary, .large_binary, .utf8, .large_utf8, .binary_view, .utf8_view => {
+                    dict_members[num_dict_members] = .{
+                        .table_index = @intCast(table_idx),
+                        .field_index = @intCast(field_idx),
+                    };
+                    num_dict_members += 1;
+                },
+                else => {},
+            }
+        }
+    }
+
     const data = chunk.Chunk{
         .tables = &tables,
         .schema = schema.DatasetSchema{
             .table_names = table_names,
-            .dicts = &.{},
+            .dicts = &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true }},
             .tables = &table_schemas,
         },
     };
