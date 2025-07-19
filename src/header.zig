@@ -4,6 +4,8 @@ const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
 const arrow = @import("arrow");
 
+const Scalar = arrow.scalar.Scalar;
+
 const Compression = @import("./compression.zig").Compression;
 
 pub const Page = struct {
@@ -14,26 +16,11 @@ pub const Page = struct {
     compressed_size: u32,
 };
 
-pub const MinMax = union(enum) {
-    i8: struct { i8, i8 },
-    i16: struct { i16, i16 },
-    i32: struct { i32, i32 },
-    i64: struct { i64, i64 },
-    i128: struct { i128, i128 },
-    i256: struct { i256, i256 },
-    u8: struct { u8, u8 },
-    u16: struct { u16, u16 },
-    u32: struct { u32, u32 },
-    u64: struct { u64, u64 },
-    f16: struct { f16, f16 },
-    f32: struct { f32, f32 },
-    f64: struct { f64, f64 },
-    binary: struct { []const u8, []const u8 },
-};
-
 pub const Buffer = struct {
     pages: []const Page,
-    minmax: ?[]const MinMax,
+    /// This is an untyped slice which should be casted using @ptrCast when using it
+    /// We use the alignment of the scalar with highest alignment (i256), which has 32 bytes alignment.
+    minmax: ?[]align(32) const u8,
     row_index_ends: []const u32,
     compression: Compression,
 };

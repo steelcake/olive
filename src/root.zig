@@ -11,8 +11,10 @@ pub const schema = @import("./schema.zig");
 pub const header = @import("./header.zig");
 pub const compression = @import("./compression.zig");
 pub const read = @import("./read.zig");
+const dict = @import("./dict.zig");
 
 test {
+    _ = dict;
     _ = read;
     _ = write;
     _ = schema;
