@@ -118,6 +118,7 @@ fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *cons
     return (builder.finish() catch unreachable);
 }
 
+/// Finds the index of the given element inside the given dict_array
 fn find_dict_idx(dict_array: *const arr.BinaryArray, val: []const u8) ?u32 {
     var idx: u32 = dict_array.offset;
     while (idx < dict_array.offset + dict_array.len) : (idx += 1) {
@@ -131,6 +132,7 @@ fn find_dict_idx(dict_array: *const arr.BinaryArray, val: []const u8) ?u32 {
     return null;
 }
 
+/// Finds the dictionary the corresponds to given field (table_index/field_index)
 pub fn find_dict(dicts: []const schema.DictSchema, dict_elements: []const arr.BinaryArray, table_index: usize, field_index: usize) ?*const arr.BinaryArray {
     for (dicts, 0..) |dict, dict_idx| {
         for (dict.members) |member| {

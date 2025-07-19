@@ -8,29 +8,154 @@ const Scalar = arrow.scalar.Scalar;
 
 const Compression = @import("./compression.zig").Compression;
 
+pub const Array = union(enum) {
+    null: NullArray,
+    i8: Int8Array,
+    i16: Int16Array,
+    i32: Int32Array,
+    i64: Int64Array,
+    u8: UInt8Array,
+    u16: UInt16Array,
+    u32: UInt32Array,
+    u64: UInt64Array,
+    f16: Float16Array,
+    f32: Float32Array,
+    f64: Float64Array,
+    binary: BinaryArray,
+    bool: BoolArray,
+    list: ListArray,
+    struct_: StructArray,
+    dense_union: DenseUnionArray,
+    sparse_union: SparseUnionArray,
+    fixed_size_binary: FixedSizeBinaryArray,
+    fixed_size_list: FixedSizeListArray,
+    map: MapArray,
+    run_end_encoded: RunEndArray,
+    dict: DictArray,
+};
+
 pub const Page = struct {
-    /// Offset of the page start inside the data section of file
     offset: u32,
-    uncompressed_size: u32,
-    /// Compressed size of the page, equals uncompressed_size if parent buffer.compression is set to `.no_compression`
-    compressed_size: u32,
+    size: u32,
 };
 
 pub const Buffer = struct {
     pages: []const Page,
-    /// This is an untyped slice which should be casted using @ptrCast when using it
-    /// We use the alignment of the scalar with highest alignment (i256), which has 32 bytes alignment.
-    minmax: ?[]align(32) const u8,
     row_index_ends: []const u32,
-    compression: Compression,
 };
 
-/// Same layout as described in Arrow Spec
-pub const Array = struct {
-    buffers: []const Buffer,
-    children: []const Array,
+pub const BoolArray = struct {
+    values: Buffer,
+    validity: ?Buffer,
     len: u32,
     null_count: u32,
+};
+
+pub fn PrimitiveArray(comptime T: type) type {
+    return struct {
+        values: Buffer,
+        validity: ?Buffer,
+        len: u32,
+        offset: u32,
+        null_count: u32,
+        minmax: ?[]const struct { min: T, max: T },
+    };
+}
+
+pub const UInt8Array = PrimitiveArray(u8);
+pub const UInt16Array = PrimitiveArray(u16);
+pub const UInt32Array = PrimitiveArray(u32);
+pub const UInt64Array = PrimitiveArray(u64);
+pub const Int8Array = PrimitiveArray(i8);
+pub const Int16Array = PrimitiveArray(i16);
+pub const Int32Array = PrimitiveArray(i32);
+pub const Int64Array = PrimitiveArray(i64);
+pub const Float16Array = PrimitiveArray(f16);
+pub const Float32Array = PrimitiveArray(f32);
+pub const Float64Array = PrimitiveArray(f64);
+
+pub const FixedSizeBinaryArray = struct {
+    data: Buffer,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+    minmax: ?[]const struct { min: []const u8, max: []const u8 },
+};
+
+pub const DictArray = struct {
+    keys: *const Array,
+    values: *const Array,
+    is_ordered: bool,
+    /// Not in arrow spec but the len and offset here are applied on top of the len and offset of `keys` similar to how it would work in a struct array.
+    len: u32,
+    /// Not in arrow spec but the len and offset here are applied on top of the len and offset of `keys` similar to how it would work in a struct array.
+    offset: u32,
+};
+
+pub const RunEndArray = struct {
+    run_ends: *const Array,
+    values: *const Array,
+    len: u32,
+    offset: u32,
+};
+
+pub const BinaryArray = struct {
+    data: Buffer,
+    offsets: Buffer,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+    minmax: ?[]const struct { min: []const u8, max: []const u8 },
+};
+
+pub const StructArray = struct {
+    field_values: []const Array,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+};
+
+pub const FixedSizeListArray = struct {
+    inner: *const Array,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+};
+
+pub const ListArray = struct {
+    inner: *const Array,
+    offsets: Buffer,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+};
+
+pub const UnionArray = struct {
+    type_ids: Buffer,
+    children: []const Array,
+    len: u32,
+};
+
+pub const DenseUnionArray = struct {
+    offsets: Buffer,
+    inner: UnionArray,
+};
+
+pub const SparseUnionArray = struct {
+    inner: UnionArray,
+};
+
+pub const NullArray = struct {
+    len: u32,
+};
+
+pub const MapArray = struct {
+    entries: *const StructArray,
+    offsets: Buffer,
+    validity: ?Buffer,
+    len: u32,
+    null_count: u32,
+    keys_are_sorted: bool,
 };
 
 pub const Table = struct {
@@ -70,7 +195,7 @@ pub const Filter = struct {
 };
 
 pub const Dict = struct {
-    data: Array,
+    data: BinaryArray,
     filter: ?Filter,
 };
 
