@@ -2,21 +2,11 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
+const arrow = @import("arrow");
+
+const Scalar = arrow.scalar.Scalar;
 
 const Compression = @import("./compression.zig").Compression;
-
-/// Number of bytes for MinMax values
-pub const MinMaxLen = 32;
-
-/// 32 byte prefixes of min/max values a page has.
-/// Integral values are encoded as little endian.
-/// Null values are not included in minmax.
-///
-/// min will be {u8.MAX} * 32 and max will be {0} * 32 if there wasn't any non-null values in the array
-pub const MinMax = struct {
-    min: [MinMaxLen]u8,
-    max: [MinMaxLen]u8,
-};
 
 pub const Page = struct {
     /// Offset of the page start inside the data section of file
@@ -28,7 +18,9 @@ pub const Page = struct {
 
 pub const Buffer = struct {
     pages: []const Page,
-    minmax: ?[]const MinMax,
+    /// This is an untyped slice which should be casted using @ptrCast when using it
+    /// We use the alignment of the scalar with highest alignment (i256), which has 32 bytes alignment.
+    minmax: ?[]align(32) const u8,
     row_index_ends: []const u32,
     compression: Compression,
 };
