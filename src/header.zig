@@ -8,6 +8,10 @@ const Scalar = arrow.scalar.Scalar;
 
 const Compression = @import("./compression.zig").Compression;
 
+pub fn MinMax(comptime T: type) type {
+    return struct { min: T, max: T };
+}
+
 pub const Array = union(enum) {
     null: NullArray,
     i8: Int8Array,
@@ -34,8 +38,8 @@ pub const Array = union(enum) {
     map: MapArray,
     run_end_encoded: RunEndArray,
     dict: DictArray,
-    interval_day_time: PrimitiveArray([2]i32),
-    interval_moth_day_nano: PrimitiveArray(arrow.array.MonthDayNano),
+    interval_day_time: IntervalDayTimeArray,
+    interval_moth_day_nano: IntervalMonthDayNanoArray,
 };
 
 pub const Page = struct {
@@ -56,12 +60,24 @@ pub const BoolArray = struct {
     len: u32,
 };
 
+pub const IntervalDayTimeArray = struct {
+    values: Buffer,
+    validity: ?Buffer,
+    len: u32,
+};
+
+pub const IntervalMonthDayNanoArray = struct {
+    values: Buffer,
+    validity: ?Buffer,
+    len: u32,
+};
+
 pub fn PrimitiveArray(comptime T: type) type {
     return struct {
         values: Buffer,
         validity: ?Buffer,
         len: u32,
-        minmax: ?[]const struct { min: T, max: T },
+        minmax: ?[]const MinMax(T),
     };
 }
 
@@ -83,7 +99,7 @@ pub const FixedSizeBinaryArray = struct {
     data: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const struct { min: []const u8, max: []const u8 },
+    minmax: ?[]const MinMax([]const u8),
 };
 
 pub const DictArray = struct {
@@ -106,8 +122,11 @@ pub const BinaryArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const struct { min: []const u8, max: []const u8 },
-    offset_minmax: []const struct { min: u32, max: u32 },
+    minmax: ?[]const MinMax([]const u8),
+    /// This field gives the range that a page of offsets cover.
+    /// So data_ranges.min is the minimum offset that is in the offsets page,
+    ///  and data_ranges.max is the next offset that comes after the last offset in the offsets page.
+    data_ranges: []const MinMax(u32),
 };
 
 pub const StructArray = struct {

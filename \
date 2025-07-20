@@ -367,7 +367,7 @@ fn empty_buffer() header.Buffer {
     };
 }
 
-fn write_primitive_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32, has_minmax_index: bool) Error!header.PrimitiveArray(T) {
+fn write_primitive_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32) Error!header.PrimitiveArray(T) {
     if (array.len == 0) {
         return .{
             .values = empty_buffer(),
@@ -377,38 +377,20 @@ fn write_primitive_array(comptime T: type, params: Write, array: *const arr.Prim
         };
     }
 
-    const values = try write_buffer(T, params, array.values[array.offset .. array.offset + array.len], data_section_size);
-    const validity = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
-
-    var minmax: ?[]const header.MinMax(T) = null;
-    if (has_minmax_index) {
-        const mm = try params.header_alloc.alloc(header.MinMax(T), values.row_index_ends.len);
-
-        var start: u32 = 0;
-        for (values.row_index_ends, 0..) |end, page_idx| {
-            const page_data = arrow.slice.slice(array, start, end - start);
-
-            const min = arrow.minmax.min_primitive(T, page_data);
-            const max = arrow.minmax.max_primitive(T, page_data);
-
-            mm[page_idx] = .{ .min = min, .max = max };
-
-            start = end;
-        }
-
-        minmax = mm;
-    }
+    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = try write_buffer(T, params, array.values[array.offset .. array.offset + array.len], data_section_size);
 
     return .{
-        .values = values,
-        .validity = validity,
+        .buffers = buffers,
+        .children = &.{},
         .len = array.len,
-        .minmax = minmax,
+        .null_count = array.null_count,
     };
 }
 
-fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u8, data_section_size: *u32) Error!?header.Buffer {
-    const validity = validity_opt orelse return null;
+fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u8, data_section_size: *u32) Error!header.Buffer {
+    const validity = validity_opt orelse return empty_buffer();
 
     const v = if (offset % 8 != 0) non_aligned: {
         const x = try params.scratch_alloc.alloc(u8, (len + 7) / 8);
@@ -436,12 +418,10 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
 
     var compr: ?Compression = null;
 
-    const num_pages = (buffer.len + max_page_len - 1) / max_page_len;
-    const pages = try params.header_alloc.alloc(header.Page, num_pages);
-    const row_index_ends = try params.header_alloc.alloc(u32, num_pages);
+    var pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
+    var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
 
     var buffer_offset: u32 = 0;
-    var page_idx: usize = 0;
     while (buffer_offset < buffer.len) {
         const page_len = @min(max_page_len, buffer.len);
         const page: []const u8 = @ptrCast(buffer[buffer_offset .. buffer_offset + page_len]);
@@ -456,82 +436,152 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
         });
 
         // Write header info to arrays
-        pages[page_idx] = header.Page{
+        try pages.append(params.scratch_alloc, header.Page{
             .uncompressed_size = @intCast(page_len * @sizeOf(T)),
             .compressed_size = @intCast(compressed_size),
             .offset = page_offset,
-        };
-        row_index_ends[page_idx] = buffer_offset + page_len;
+        });
+        try row_index_ends.append(params.scratch_alloc, buffer_offset + page_len);
 
         buffer_offset += page_len;
-        page_idx += 1;
     }
-    std.debug.assert(page_idx == num_pages);
+
+    const out_pages = try params.header_alloc.alloc(header.Page, pages.items.len);
+    const out_row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len);
+    @memcpy(out_pages, pages.items);
+    @memcpy(out_row_index_ends, row_index_ends.items);
 
     return header.Buffer{
         .compression = compr orelse .no_compression,
-        .pages = pages,
-        .row_index_ends = row_index_ends,
+        .pages = out_pages,
+        .row_index_ends = out_row_index_ends,
     };
 }
 
-fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericBinaryArray(index_t), data_section_size: *u32, has_minmax_index: bool) Error!header.BinaryArray {
-    const I = index_t.to_type();
-
+fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericBinaryArray(index_t), data_section_size: *u32, has_minmax_index: bool) Error!header.Array {
     if (array.len == 0) {
-        return .{
-            .data = empty_buffer(),
-            .offsets = empty_buffer(),
-            .validity = null,
-            .len = 0,
-            .minmax = null,
-            .data_ranges = &.{},
-        };
+        return empty_array();
+    }
+    const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
+
+    var data_compression: ?Compression = null;
+    var offsets_compression: ?Compression = null;
+
+    var data_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
+    var offsets_pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
+    var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
+
+    var idx: u32 = array.offset;
+    while (idx < array.len + array.offset) {
+        var data_page_size: usize = 0;
+        var page_elem_count: u32 = 0;
+
+        while (data_page_size < target_page_size and idx < array.len + array.offset) : (idx += 1) {
+            const elem: ?[]const u8 = if (array.null_count > 0)
+                arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, (array.validity orelse unreachable).ptr, idx)
+            else
+                arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, idx);
+
+            page_elem_count += 1;
+
+            if (elem) |e| {
+                data_page_size += e.len;
+            }
+        }
+
+        if (page_elem_count == 0) {
+            continue;
+        }
+
+        const start: usize = @intCast(array.offsets[idx - page_elem_count]);
+        const end: usize = @intCast(array.offsets[idx]);
+        const data_page = array.data[start..end];
+        std.debug.assert(data_page.len == data_page_size);
+
+        // Write data page
+        const data_page_offset = data_section_size.*;
+        const data_page_compressed_size = try write_page(.{
+            .data_section = params.data_section,
+            .page = data_page,
+            .data_section_size = data_section_size,
+            .compression = &data_compression,
+            .compression_cfg = params.compression,
+        });
+
+        // Write offsets page
+        const offsets_page_offset = data_section_size.*;
+        const offsets_page_compressed_size = try write_page(.{
+            .data_section = params.data_section,
+            .page = @ptrCast(try normalize_offsets(index_t, array.offsets[idx - page_elem_count .. idx], params.scratch_alloc)),
+            .data_section_size = data_section_size,
+            .compression = &offsets_compression,
+            .compression_cfg = params.compression,
+        });
+
+        // Write header info to arrays
+        try data_pages.append(params.scratch_alloc, header.Page{
+            .uncompressed_size = @intCast(data_page_size),
+            .compressed_size = @intCast(data_page_compressed_size),
+            .offset = data_page_offset,
+        });
+        try offsets_pages.append(params.scratch_alloc, header.Page{
+            .uncompressed_size = @intCast(@sizeOf(index_t.to_type()) * (page_elem_count + 1)),
+            .compressed_size = @intCast(offsets_page_compressed_size),
+            .offset = offsets_page_offset,
+        });
+        try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
     }
 
-    const data = slice_data: {
-        const start: usize = @intCast(array.offsets[array.offset]);
-        const end: usize = @intCast(array.offsets[array.offset + array.len]);
-        break :slice_data try write_buffer(u8, params, array.data[start..end], data_section_size);
+    std.debug.assert(data_pages.items.len == offsets_pages.items.len and data_pages.items.len == row_index_ends.items.len);
+
+    const data_buffer_pages = try params.header_alloc.alloc(header.Page, data_pages.items.len);
+    const data_buffer_row_index_ends = try params.header_alloc.alloc(u32, row_index_ends.items.len);
+    @memcpy(data_buffer_pages, data_pages.items);
+    @memcpy(data_buffer_row_index_ends, row_index_ends.items);
+
+    var minmax: ?arrow.array.Array = null;
+    if (has_minmax_index) {
+        var start_idx = 0;
+
+        var mm = arrow.builder.BinaryBuilder.with_capacity();
+
+        for (row_index_ends, 0..) |end_idx, w_idx| {
+            const sliced = arrow.slice.slice_binary(i32, array, start_idx, end_idx - start_idx);
+            const min = arrow.minmax.min_binary(index_t, &sliced);
+            const max = arrow.minmax.max_binary(index_t, &sliced);
+            start_idx = end_idx;
+        }
+    }
+
+    // const minmax = try params.header_alloc.alloc([]const u8, )
+
+    const data_buffer = header.Buffer{
+        .pages = data_buffer_pages,
+        .minmax = minmax,
+        .row_index_ends = data_buffer_row_index_ends,
+        .compression = data_compression orelse .no_compression,
     };
 
-    const normalized_offsets = try normalize_offsets(index_t, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
-    const offsets = try write_buffer(I, params, normalized_offsets[0..array.len], data_section_size);
+    const offsets_buffer_pages = try params.header_alloc.alloc(header.Page, offsets_pages.items.len);
+    @memcpy(offsets_buffer_pages, offsets_pages.items);
 
-    const validity = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    const offsets_buffer = header.Buffer{
+        .pages = offsets_buffer_pages,
+        .minmax = null,
+        .row_index_ends = data_buffer_row_index_ends,
+        .compression = offsets_compression orelse .no_compression,
+    };
 
-    const data_ranges = try params.header_alloc.alloc(header.MinMax(u32), offsets.row_index_ends.len);
+    const buffers = try params.header_alloc.alloc(header.Buffer, 3);
+    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
+    buffers[1] = offsets_buffer;
+    buffers[2] = data_buffer;
 
-    {
-        var page_start: u32 = 0;
-        for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-            data_ranges[page_idx] = .{ .min = normalized_offsets[page_start], .max = normalized_offsets[page_end] };
-            page_start = page_end;
-        }
-    }
-
-    var minmax: ?[]const header.MinMax([]const u8) = null;
-    if (has_minmax_index) {
-        const mm = try params.header_alloc.alloc(header.MinMax([]const u8), offsets.row_index_ends.len);
-
-        var page_start: u32 = 0;
-        for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-            const page_data = arrow.slice.slice(array, page_start, page_end - page_start);
-            const min = arrow.minmax.min_binary(index_t, page_data);
-            const max = arrow.minmax.max_binary(index_t, page_data);
-            mm[page_idx] = .{ .min = min, .max = max };
-            page_start = page_end;
-        }
-        minmax = mm;
-    }
-
-    return .{
-        .data = data,
-        .offsets = offsets,
+    return header.Array{
+        .buffers = buffers,
+        .children = &.{},
         .len = array.len,
-        .validity = validity,
-        .minmax = minmax,
-        .data_ranges = data_ranges,
+        .null_count = array.null_count,
     };
 }
 
