@@ -287,7 +287,7 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
 
 fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListArray(index_t), data_section_size: *u32) Error!header.Array {
     if (array.len == 0) {
-        return empty_array();
+        return .{};
     }
 
     const buffers = try params.header_alloc.alloc(header.Buffer, 2);
@@ -313,22 +313,24 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
 
 fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_size: *u32) Error!header.Array {
     if (array.len == 0) {
-        return empty_array();
+        return .{
+            .values = empty_buffer(),
+            .validity = null,
+            .len = 0,
+        };
     }
 
-    const buffers = try params.header_alloc.alloc(header.Buffer, 2);
-    buffers[0] = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
-    buffers[1] = try write_validity(params, array.offset, array.len, array.values, data_section_size);
+    const values = (try write_validity(params, array.offset, array.len, array.values, data_section_size)) orelse unreachable;
+    const validity = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
 
     return .{
-        .buffers = buffers,
-        .children = &.{},
+        .values = values,
+        .validity = validity,
         .len = array.len,
-        .null_count = array.null_count,
     };
 }
 
-fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32) Error!header.Array {
+fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32, has_minmax_index: bool) Error!header.BinaryArray {
     var total_size: u32 = 0;
 
     var idx: u32 = array.offset;
@@ -356,7 +358,7 @@ fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, dat
 
     const bin_array = builder.finish() catch unreachable;
 
-    return try write_binary_array(.i32, params, &bin_array, data_section_size);
+    return try write_binary_array(.i32, params, &bin_array, data_section_size, has_minmax_index);
 }
 
 fn empty_buffer() header.Buffer {
@@ -388,8 +390,8 @@ fn write_primitive_array(comptime T: type, params: Write, array: *const arr.Prim
         for (values.row_index_ends, 0..) |end, page_idx| {
             const page_data = arrow.slice.slice(array, start, end - start);
 
-            const min = arrow.minmax.min_primitive(T, page_data);
-            const max = arrow.minmax.max_primitive(T, page_data);
+            const min = arrow.minmax.min_primitive(T, page_data) orelse unreachable;
+            const max = arrow.minmax.max_primitive(T, page_data) orelse unreachable;
 
             mm[page_idx] = .{ .min = min, .max = max };
 
@@ -485,7 +487,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
             .validity = null,
             .len = 0,
             .minmax = null,
-            .data_ranges = &.{},
+            .offset_ranges = &.{},
         };
     }
 
@@ -500,12 +502,12 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
 
     const validity = try write_validity(params, array.offset, array.len, array.validity, data_section_size);
 
-    const data_ranges = try params.header_alloc.alloc(header.MinMax(u32), offsets.row_index_ends.len);
+    const offset_ranges = try params.header_alloc.alloc(header.Range, offsets.row_index_ends.len);
 
     {
         var page_start: u32 = 0;
         for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-            data_ranges[page_idx] = .{ .min = normalized_offsets[page_start], .max = normalized_offsets[page_end] };
+            offset_ranges[page_idx] = .{ .start = normalized_offsets[page_start], .end = normalized_offsets[page_end] };
             page_start = page_end;
         }
     }
@@ -517,8 +519,8 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         var page_start: u32 = 0;
         for (offsets.row_index_ends, 0..) |page_end, page_idx| {
             const page_data = arrow.slice.slice(array, page_start, page_end - page_start);
-            const min = arrow.minmax.min_binary(index_t, page_data);
-            const max = arrow.minmax.max_binary(index_t, page_data);
+            const min = try copy_str(arrow.minmax.min_binary(index_t, page_data) orelse unreachable, params.header_alloc);
+            const max = try copy_str(arrow.minmax.max_binary(index_t, page_data) orelse unreachable, params.header_alloc);
             mm[page_idx] = .{ .min = min, .max = max };
             page_start = page_end;
         }
@@ -531,8 +533,14 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         .len = array.len,
         .validity = validity,
         .minmax = minmax,
-        .data_ranges = data_ranges,
+        .data_ranges = offset_ranges,
     };
+}
+
+fn copy_str(str: []const u8, alloc: Allocator) Error![]const u8 {
+    const out = try alloc.alloc(u8, str.len);
+    @memcpy(out, str);
+    return out;
 }
 
 fn normalize_offsets(comptime index_t: arr.IndexType, offsets: []const index_t.to_type(), scratch_alloc: Allocator) Error![]const index_t.to_type() {
