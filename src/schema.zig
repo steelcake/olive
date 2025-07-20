@@ -6,6 +6,7 @@ const Compression = @import("./compression.zig");
 pub const TableSchema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
+    /// Minmax index is only supported for primitive and binary types
     has_minmax_index: []const bool,
 
     pub fn check(self: *const TableSchema, table: []const arrow.array.Array) bool {

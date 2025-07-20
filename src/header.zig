@@ -14,6 +14,8 @@ pub const Array = union(enum) {
     i16: Int16Array,
     i32: Int32Array,
     i64: Int64Array,
+    i128: Int128Array,
+    i256: Int256Array,
     u8: UInt8Array,
     u16: UInt16Array,
     u32: UInt32Array,
@@ -32,23 +34,26 @@ pub const Array = union(enum) {
     map: MapArray,
     run_end_encoded: RunEndArray,
     dict: DictArray,
+    interval_day_time: PrimitiveArray([2]i32),
+    interval_moth_day_nano: PrimitiveArray(arrow.array.MonthDayNano),
 };
 
 pub const Page = struct {
     offset: u32,
-    size: u32,
+    uncompressed_size: u32,
+    compressed_size: u32,
 };
 
 pub const Buffer = struct {
     pages: []const Page,
     row_index_ends: []const u32,
+    compression: Compression,
 };
 
 pub const BoolArray = struct {
     values: Buffer,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
 };
 
 pub fn PrimitiveArray(comptime T: type) type {
@@ -56,8 +61,6 @@ pub fn PrimitiveArray(comptime T: type) type {
         values: Buffer,
         validity: ?Buffer,
         len: u32,
-        offset: u32,
-        null_count: u32,
         minmax: ?[]const struct { min: T, max: T },
     };
 }
@@ -70,6 +73,8 @@ pub const Int8Array = PrimitiveArray(i8);
 pub const Int16Array = PrimitiveArray(i16);
 pub const Int32Array = PrimitiveArray(i32);
 pub const Int64Array = PrimitiveArray(i64);
+pub const Int128Array = PrimitiveArray(i128);
+pub const Int256Array = PrimitiveArray(i256);
 pub const Float16Array = PrimitiveArray(f16);
 pub const Float32Array = PrimitiveArray(f32);
 pub const Float64Array = PrimitiveArray(f64);
@@ -78,7 +83,6 @@ pub const FixedSizeBinaryArray = struct {
     data: Buffer,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
     minmax: ?[]const struct { min: []const u8, max: []const u8 },
 };
 
@@ -86,9 +90,7 @@ pub const DictArray = struct {
     keys: *const Array,
     values: *const Array,
     is_ordered: bool,
-    /// Not in arrow spec but the len and offset here are applied on top of the len and offset of `keys` similar to how it would work in a struct array.
     len: u32,
-    /// Not in arrow spec but the len and offset here are applied on top of the len and offset of `keys` similar to how it would work in a struct array.
     offset: u32,
 };
 
@@ -104,22 +106,20 @@ pub const BinaryArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
     minmax: ?[]const struct { min: []const u8, max: []const u8 },
+    offset_minmax: []const struct { min: u32, max: u32 },
 };
 
 pub const StructArray = struct {
     field_values: []const Array,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
 };
 
 pub const FixedSizeListArray = struct {
     inner: *const Array,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
 };
 
 pub const ListArray = struct {
@@ -127,7 +127,6 @@ pub const ListArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
 };
 
 pub const UnionArray = struct {
@@ -154,7 +153,6 @@ pub const MapArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    null_count: u32,
     keys_are_sorted: bool,
 };
 

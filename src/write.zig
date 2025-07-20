@@ -114,53 +114,49 @@ pub fn write(params: Write) Error!header.Header {
 fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32, has_minmax_index: bool) Error!header.Array {
     switch (array.*) {
         .null => |*a| return .{ .null = .{ .len = a.len } },
-        .i8 => |*a| return try write_primitive_array(i8, params, a, data_section_size, has_minmax_index),
-        .i16 => |*a| return try write_primitive_array(i16, params, a, data_section_size, has_minmax_index),
-        .i32 => |*a| return try write_primitive_array(i32, params, a, data_section_size, has_minmax_index),
-        .i64 => |*a| return try write_primitive_array(i64, params, a, data_section_size, has_minmax_index),
-        .u8 => |*a| return try write_primitive_array(u8, params, a, data_section_size, has_minmax_index),
-        .u16 => |*a| return try write_primitive_array(u16, params, a, data_section_size, has_minmax_index),
-        .u32 => |*a| return try write_primitive_array(u32, params, a, data_section_size, has_minmax_index),
-        .u64 => |*a| return try write_primitive_array(u64, params, a, data_section_size, has_minmax_index),
-        .f16 => |*a| return try write_primitive_array(f16, params, a, data_section_size, has_minmax_index),
-        .f32 => |*a| return try write_primitive_array(f32, params, a, data_section_size, has_minmax_index),
-        .f64 => |*a| return try write_primitive_array(f64, params, a, data_section_size, has_minmax_index),
-        .binary => |*a| return try write_binary_array(.i32, params, a, data_section_size, has_minmax_index),
-        .utf8 => |*a| return try write_binary_array(.i32, params, &a.inner, data_section_size, has_minmax_index),
-        .bool => |*a| return try write_bool_array(params, a, data_section_size),
-        .decimal32 => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index),
-        .decimal64 => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index),
-        .decimal128 => |*a| return try write_primitive_array(i128, params, &a.inner, data_section_size, has_minmax_index),
-        .decimal256 => |*a| return try write_primitive_array(i256, params, &a.inner, data_section_size, has_minmax_index),
-        .date32 => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index),
-        .date64 => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index),
-        .time32 => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index),
-        .time64 => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index),
-        .timestamp => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index),
-        .interval_year_month => |*a| return try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index),
-        .interval_day_time => |*a| return try write_primitive_array([2]i32, params, &a.inner, data_section_size, has_minmax_index),
-        .interval_month_day_nano => |*a| return try write_primitive_array(arr.MonthDayNano, params, &a.inner, data_section_size, has_minmax_index),
-        .list => |*a| return try write_list_array(.i32, params, a, data_section_size),
-        .struct_ => |*a| return try write_struct_array(params, a, data_section_size),
-        .dense_union => |*a| return try write_dense_union_array(params, a, data_section_size),
-        .sparse_union => |*a| return try write_sparse_union_array(params, a, data_section_size),
-        .fixed_size_binary => |*a| return try write_fixed_size_binary_array(params, a, data_section_size, has_minmax_index),
-        .fixed_size_list => |*a| return try write_fixed_size_list_array(params, a, data_section_size),
-        // TODO: not added because it isn't tested for ffi in arrow-zig yet
-        .map => unreachable,
-        .duration => |*a| return try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index),
-        .large_binary => |*a| return try write_binary_array(.i64, params, a, data_section_size, has_minmax_index),
-        .large_utf8 => |*a| return try write_binary_array(.i64, params, &a.inner, data_section_size, has_minmax_index),
-        .large_list => |*a| return try write_list_array(.i64, params, a, data_section_size),
-        // TODO: not added because it isn't tested for ffi in arrow-zig yet
-        .run_end_encoded => unreachable,
-        .binary_view => |*a| return try write_binary_view_array(params, a, data_section_size, has_minmax_index),
-        .utf8_view => |*a| return try write_binary_view_array(params, &a.inner, data_section_size, has_minmax_index),
-        // TODO: probably need concat implemented in arrow-zig in order to implement this in a way that makes sense
-        .list_view => unreachable,
-        .large_list_view => unreachable,
-        // TODO: not added because it isn't tested for ffi in arrow-zig yet
-        .dict => unreachable,
+        .i8 => |*a| return .{ .i8 = try write_primitive_array(i8, params, a, data_section_size, has_minmax_index) },
+        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, params, a, data_section_size, has_minmax_index) },
+        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, params, a, data_section_size, has_minmax_index) },
+        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, params, a, data_section_size, has_minmax_index) },
+        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, params, a, data_section_size, has_minmax_index) },
+        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, params, a, data_section_size, has_minmax_index) },
+        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, params, a, data_section_size, has_minmax_index) },
+        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, params, a, data_section_size, has_minmax_index) },
+        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, params, a, data_section_size, has_minmax_index) },
+        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, params, a, data_section_size, has_minmax_index) },
+        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, params, a, data_section_size, has_minmax_index) },
+        .binary => |*a| return .{ .binary = try write_binary_array(.i32, params, a, data_section_size, has_minmax_index) },
+        .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .bool => |*a| return .{ .bool = try write_bool_array(params, a, data_section_size) },
+        .decimal32 => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .decimal64 => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .decimal128 => |*a| return .{ .i128 = try write_primitive_array(i128, params, &a.inner, data_section_size, has_minmax_index) },
+        .decimal256 => |*a| return .{ .i256 = try write_primitive_array(i256, params, &a.inner, data_section_size, has_minmax_index) },
+        .date32 => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .date64 => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .time32 => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .time64 => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .timestamp => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .interval_year_month => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .interval_day_time => |*a| return .{ .interval_day_time = try write_primitive_array([2]i32, params, &a.inner, data_section_size, has_minmax_index) },
+        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_primitive_array(arr.MonthDayNano, params, &a.inner, data_section_size, has_minmax_index) },
+        .list => |*a| return .{ .list = try write_list_array(.i32, params, a, data_section_size) },
+        .struct_ => |*a| return .{ .struct_ = try write_struct_array(params, a, data_section_size) },
+        .dense_union => |*a| return .{ .dense_union = try write_dense_union_array(params, a, data_section_size) },
+        .sparse_union => |*a| return .{ .sparse_union = try write_sparse_union_array(params, a, data_section_size) },
+        .fixed_size_binary => |*a| return .{ .fixed_size_binary = try write_fixed_size_binary_array(params, a, data_section_size, has_minmax_index) },
+        .fixed_size_list => |*a| return .{ .fixed_size_list = try write_fixed_size_list_array(params, a, data_section_size) },
+        // .map => |*a| return .{ .map = try write_map_array(params, a, data_section_size) },
+        .duration => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, params, a, data_section_size, has_minmax_index) },
+        .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, params, &a.inner, data_section_size, has_minmax_index) },
+        .large_list => |*a| return .{ .list = try write_list_array(.i64, params, a, data_section_size) },
+        // .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(params, a, data_section_size) },
+        .binary_view => |*a| return .{ .binary = try write_binary_view_array(params, a, data_section_size, has_minmax_index) },
+        .utf8_view => |*a| return .{ .binary = try write_binary_view_array(params, &a.inner, data_section_size, has_minmax_index) },
+        // .list_view => |*a| return .{ .list = try write_list_view_array(.i32, params, a, data_section_size) },
+        // .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, params, a, data_section_size) },
+        // .dict => |*a| return .{ .dict = try write_dict_array(params, a, data_section_size) },
     }
 }
 
@@ -363,9 +359,22 @@ fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, dat
     return try write_binary_array(.i32, params, &bin_array, data_section_size);
 }
 
-fn write_primitive_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32) Error!header.Array {
+fn empty_buffer() header.Buffer {
+    return .{
+        .row_index_ends = &.{},
+        .pages = &.{},
+        .compression = .no_compresion,
+    };
+}
+
+fn write_primitive_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32) Error!header.PrimitiveArray(T) {
     if (array.len == 0) {
-        return empty_array();
+        return .{
+            .values = empty_buffer(),
+            .validity = null,
+            .len = 0,
+            .minmax = null,
+        };
     }
 
     const buffers = try params.header_alloc.alloc(header.Buffer, 2);
@@ -377,15 +386,6 @@ fn write_primitive_array(comptime T: type, params: Write, array: *const arr.Prim
         .children = &.{},
         .len = array.len,
         .null_count = array.null_count,
-    };
-}
-
-fn empty_array() header.Array {
-    return header.Array{
-        .buffers = &.{},
-        .children = &.{},
-        .len = 0,
-        .null_count = 0,
     };
 }
 
@@ -406,72 +406,25 @@ fn write_validity(params: Write, offset: u32, len: u32, validity_opt: ?[]const u
         break :non_aligned x;
     } else validity[(offset / 8)..(offset / 8 + (len + 7) / 8)];
 
-    var compr: ?Compression = null;
-
-    const page_offset = data_section_size.*;
-    const compressed_size = try write_page(.{
-        .data_section = params.data_section,
-        .page = v,
-        .data_section_size = data_section_size,
-        .compression = &compr,
-        .compression_cfg = params.compression,
-    });
-
-    const pages = try params.header_alloc.alloc(header.Page, 1);
-    pages[0] = header.Page{
-        .offset = page_offset,
-        .compressed_size = @intCast(compressed_size),
-        .uncompressed_size = @intCast(v.len),
-    };
-
-    const row_index_ends = try params.header_alloc.alloc(u32, 1);
-    row_index_ends[0] = len;
-
-    return .{
-        .pages = pages,
-        .minmax = null,
-        .row_index_ends = row_index_ends,
-        .compression = compr orelse .no_compression,
-    };
-}
-
-fn empty_buffer() header.Buffer {
-    return header.Buffer{
-        .minmax = null,
-        .pages = &.{},
-        .compression = .no_compression,
-        .row_index_ends = &.{},
-    };
+    return try write_buffer(u8, params, v, data_section_size);
 }
 
 fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section_size: *u32) Error!header.Buffer {
     if (buffer.len == 0) {
         return empty_buffer();
     }
-    const target_page_size: usize = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(usize);
+    const max_page_len: usize = if (params.page_size_kb) |ps| ((ps << 10) + @sizeOf(T) - 1) / @sizeOf(T) else std.math.maxInt(usize);
+    std.debug.assert(max_page_len > 0);
 
     var compr: ?Compression = null;
 
     var pages = try ArrayList(header.Page).initCapacity(params.scratch_alloc, 128);
     var row_index_ends = try ArrayList(u32).initCapacity(params.scratch_alloc, 128);
 
-    var idx: u32 = 0;
-    while (idx < buffer.len) {
-        var page_size: usize = 0;
-        var page_elem_count: u32 = 0;
-
-        // TODO: don't need to loop like this here, can just calculate
-        while (page_size < target_page_size and idx < buffer.len) : (idx += 1) {
-            page_elem_count += 1;
-            page_size += @sizeOf(T);
-        }
-
-        if (page_elem_count == 0) {
-            continue;
-        }
-
-        const page: []const u8 = @ptrCast(buffer[idx - page_elem_count .. idx]);
-        std.debug.assert(page.len == page_elem_count * @sizeOf(T));
+    var buffer_offset: u32 = 0;
+    while (buffer_offset < buffer.len) {
+        const page_len = @min(max_page_len, buffer.len);
+        const page: []const u8 = @ptrCast(buffer[buffer_offset .. buffer_offset + page_len]);
 
         const page_offset = data_section_size.*;
         const compressed_size = try write_page(.{
@@ -484,11 +437,13 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
 
         // Write header info to arrays
         try pages.append(params.scratch_alloc, header.Page{
-            .uncompressed_size = @intCast(page_size),
+            .uncompressed_size = @intCast(page_len * @sizeOf(T)),
             .compressed_size = @intCast(compressed_size),
             .offset = page_offset,
         });
-        try row_index_ends.append(params.scratch_alloc, idx - page_elem_count);
+        try row_index_ends.append(params.scratch_alloc, buffer_offset + page_len);
+
+        buffer_offset += page_len;
     }
 
     const out_pages = try params.header_alloc.alloc(header.Page, pages.items.len);
@@ -500,7 +455,6 @@ fn write_buffer(comptime T: type, params: Write, buffer: []const T, data_section
         .compression = compr orelse .no_compression,
         .pages = out_pages,
         .row_index_ends = out_row_index_ends,
-        .minmax = null,
     };
 }
 
