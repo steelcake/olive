@@ -139,13 +139,13 @@ pub const StructArray = struct {
 };
 
 pub const FixedSizeListArray = struct {
-    inner: *const Array,
+    inner: ?*const Array,
     validity: ?Buffer,
     len: u32,
 };
 
 pub const ListArray = struct {
-    inner: *const Array,
+    inner: ?*const Array,
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
