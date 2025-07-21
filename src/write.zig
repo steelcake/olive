@@ -151,18 +151,176 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32, 
         .sparse_union => |*a| return .{ .sparse_union = try write_sparse_union_array(params, a, data_section_size) },
         .fixed_size_binary => |*a| return .{ .fixed_size_binary = try write_fixed_size_binary_array(params, a, data_section_size, has_minmax_index) },
         .fixed_size_list => |*a| return .{ .fixed_size_list = try write_fixed_size_list_array(params, a, data_section_size) },
-        // .map => |*a| return .{ .map = try write_map_array(params, a, data_section_size) },
+        .map => |*a| return .{ .map = try write_map_array(params, a, data_section_size) },
         .duration => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
         .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, params, a, data_section_size, has_minmax_index) },
         .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, params, &a.inner, data_section_size, has_minmax_index) },
         .large_list => |*a| return .{ .list = try write_list_array(.i64, params, a, data_section_size) },
-        // .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(params, a, data_section_size) },
+        .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(params, a, data_section_size) },
         .binary_view => |*a| return .{ .binary = try write_binary_view_array(params, a, data_section_size, has_minmax_index) },
         .utf8_view => |*a| return .{ .binary = try write_binary_view_array(params, &a.inner, data_section_size, has_minmax_index) },
         // .list_view => |*a| return .{ .list = try write_list_view_array(.i32, params, a, data_section_size) },
         // .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, params, a, data_section_size) },
-        // .dict => |*a| return .{ .dict = try write_dict_array(params, a, data_section_size) },
+        .dict => |*a| return .{ .dict = try write_dict_array(params, a, data_section_size) },
     }
+}
+
+fn scalar_to_u32(scalar: arrow.scalar.Scalar) u32 {
+    return switch (scalar) {
+        .u8 => |x| @intCast(x),
+        .u16 => |x| @intCast(x),
+        .u32 => |x| @intCast(x),
+        .u64 => |x| @intCast(x),
+        .i8 => |x| @intCast(x),
+        .i16 => |x| @intCast(x),
+        .i32 => |x| @intCast(x),
+        .i64 => |x| @intCast(x),
+        else => unreachable,
+    };
+}
+
+fn normalize_dict_array_keys_impl(comptime T: type, base: T, offsets: []const T, scratch_alloc: Allocator) Error![]const T {
+    if (offsets.len == 0) {
+        return &.{};
+    }
+
+    if (base == 0) {
+        return offsets;
+    }
+
+    const normalized = try scratch_alloc.alloc(T, offsets.len);
+
+    for (0..offsets.len) |idx| {
+        normalized[idx] = offsets[idx] - base;
+    }
+
+    return normalized;
+}
+
+fn normalize_dict_array_keys(comptime T: type, base_key: arrow.scalar.Scalar, keys: *const arr.PrimitiveArray(T), scratch_alloc: Allocator) Error!arr.PrimitiveArray(T) {
+    const base = @field(base_key, @typeName(T));
+    const values = try normalize_dict_array_keys_impl(T, base, keys.values[keys.offset .. keys.offset + keys.len], scratch_alloc);
+
+    std.debug.assert(keys.null_count == 0);
+    std.debug.assert(values.len == keys.len);
+
+    return arr.PrimitiveArray(T){
+        .len = keys.len,
+        .values = values,
+        .offset = 0,
+        .validity = null,
+        .null_count = 0,
+    };
+}
+
+fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_size: *u32) Error!header.DictArray {
+    if (array.len == 0) {
+        return .{
+            .keys = null,
+            .values = null,
+            .is_ordered = false,
+            .len = 0,
+        };
+    }
+
+    const sliced_keys = arrow.slice.slice(array.keys, array.offset, array.len);
+
+    const base_key = (arrow.minmax.min(&sliced_keys) catch unreachable) orelse unreachable;
+    const min_key = scalar_to_u32(base_key);
+    const max_key = scalar_to_u32((arrow.minmax.max(&sliced_keys) catch unreachable) orelse unreachable);
+
+    const sliced_values = arrow.slice.slice(array.values, min_key, max_key - min_key + 1);
+
+    const values = try params.header_alloc.create(header.Array);
+    values.* = try write_array(params, &sliced_values, data_section_size, false);
+
+    const keys = try params.header_alloc.create(header.Array);
+
+    keys.* = switch (sliced_keys) {
+        .i8 => |*a| .{ .i8 = try normalize_dict_array_keys(i8, base_key, a, params.scratch_alloc) },
+        .i16 => |*a| .{ .i16 = try normalize_dict_array_keys(i16, base_key, a, params.scratch_alloc) },
+        .i32 => |*a| .{ .i32 = try normalize_dict_array_keys(i32, base_key, a, params.scratch_alloc) },
+        .i64 => |*a| .{ .i64 = try normalize_dict_array_keys(i64, base_key, a, params.scratch_alloc) },
+        .u8 => |*a| .{ .u8 = try normalize_dict_array_keys(u8, base_key, a, params.scratch_alloc) },
+        .u16 => |*a| .{ .u16 = try normalize_dict_array_keys(u16, base_key, a, params.scratch_alloc) },
+        .u32 => |*a| .{ .u32 = try normalize_dict_array_keys(u32, base_key, a, params.scratch_alloc) },
+        .u64 => |*a| .{ .u64 = try normalize_dict_array_keys(u64, base_key, a, params.scratch_alloc) },
+        else => unreachable,
+    };
+
+    return .{
+        .keys = keys,
+        .values = values,
+        .is_ordered = array.is_ordered,
+        .len = array.len,
+    };
+}
+
+fn write_run_end_encoded_array(params: Write, array: *const arr.RunEndArray, data_section_size: *u32) Error!header.RunEndArray {
+    if (array.len == 0) {
+        return .{
+            .run_ends = null,
+            .values = null,
+            .len = 0,
+        };
+    }
+
+    const run_ends = try params.header_alloc.create(header.Array);
+    run_ends.* = try write_array(params, arrow.slice.slice(array.run_ends, array.offset, array.len), data_section_size, false);
+    const values = try params.header.alloc.create(header.Array);
+    values.* = try write_array(params, arrow.slice.slice(array.values, array.offset, array.len), data_section_size, false);
+
+    return .{
+        .run_ends = run_ends,
+        .values = values,
+        .len = array.len,
+    };
+}
+
+fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size: *u32) Error!header.MapArray {
+    if (array.len == 0) {
+        return .{
+            .entries = null,
+            .offsets = empty_buffer(),
+            .validity = null,
+            .len = 0,
+            .keys_are_sorted = false,
+            .offset_ranges = &.{},
+        };
+    }
+
+    const inner = slice_inner: {
+        const start: u32 = @intCast(array.offsets[array.offset]);
+        const end: u32 = @intCast(array.offsets[array.offset + array.len]);
+
+        const sliced_inner = arrow.slice.slice(array.inner, start, end - start);
+
+        break :slice_inner try write_array(params, &sliced_inner, data_section_size, false);
+    };
+
+    const normalized_offsets = try normalize_offsets(i32, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
+    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(i32), data_section_size);
+
+    const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
+
+    const offset_ranges = try params.header_alloc.alloc(header.Range, offsets.row_index_ends.len);
+
+    {
+        var page_start: u32 = 0;
+        for (offsets.row_index_ends, 0..) |page_end, page_idx| {
+            offset_ranges[page_idx] = .{ .start = normalized_offsets[page_start], .end = normalized_offsets[page_end] };
+            page_start = page_end;
+        }
+    }
+
+    return .{
+        .inner = inner,
+        .offsets = offsets,
+        .len = array.len,
+        .validity = validity,
+        .offset_ranges = offset_ranges,
+        .keys_are_sorted = array.keys_are_sorted,
+    };
 }
 
 fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, data_section_size: *u32) Error!header.SparseUnionArray {
@@ -411,7 +569,7 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
         break :slice_inner try write_array(params, &sliced_inner, data_section_size, false);
     };
 
-    const normalized_offsets = try normalize_offsets(index_t, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
+    const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
     const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(I), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
@@ -638,7 +796,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         break :slice_data try write_buffer(params, @ptrCast(array.data[start..end]), @sizeOf(u8), data_section_size);
     };
 
-    const normalized_offsets = try normalize_offsets(index_t, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
+    const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
     const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(I), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
@@ -684,7 +842,7 @@ fn copy_str(str: []const u8, alloc: Allocator) Error![]const u8 {
     return out;
 }
 
-fn normalize_offsets(comptime index_t: arr.IndexType, offsets: []const index_t.to_type(), scratch_alloc: Allocator) Error![]const index_t.to_type() {
+fn normalize_offsets(comptime T: type, offsets: []const T, scratch_alloc: Allocator) Error![]const T {
     if (offsets.len == 0) {
         return &.{};
     }
@@ -695,7 +853,7 @@ fn normalize_offsets(comptime index_t: arr.IndexType, offsets: []const index_t.t
         return offsets;
     }
 
-    const normalized = try scratch_alloc.alloc(index_t.to_type(), offsets.len);
+    const normalized = try scratch_alloc.alloc(T, offsets.len);
 
     for (0..offsets.len) |idx| {
         normalized[idx] = offsets[idx] - base;
