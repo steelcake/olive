@@ -165,9 +165,9 @@ pub const DenseUnionArray = struct {
     offsets: Buffer,
     inner: UnionArray,
     /// This field gives the range that a page of offsets cover.
-    /// So offset_ranges[i].start is the minimum offset that is in the offsets page for i-th child of the union array,
-    ///  and offset_ranges[i].end is the maximum offset that is in the offsets page for i-th child of the union array.
-    offset_minmax: []const []const MinMax(u32),
+    /// So offset_ranges[i][j].min is the minimum offset that is in the i-th offsets page for j-th child of the union array.
+    ///  and offset_ranges[i][j].max is the maximum offset that is in the i-th offsets page for j-th child of the union array.
+    offset_minmax: []const []const ?MinMax(u32),
 };
 
 pub const SparseUnionArray = struct {
