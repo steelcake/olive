@@ -43,8 +43,9 @@ pub const Array = union(enum) {
     map: MapArray,
     run_end_encoded: RunEndArray,
     dict: DictArray,
-    interval_day_time: IntervalDayTimeArray,
-    interval_moth_day_nano: IntervalMonthDayNanoArray,
+    interval_year_month: IntervalArray,
+    interval_day_time: IntervalArray,
+    interval_month_day_nano: IntervalArray,
 };
 
 pub const Page = struct {
@@ -65,13 +66,7 @@ pub const BoolArray = struct {
     len: u32,
 };
 
-pub const IntervalDayTimeArray = struct {
-    values: Buffer,
-    validity: ?Buffer,
-    len: u32,
-};
-
-pub const IntervalMonthDayNanoArray = struct {
+pub const IntervalArray = struct {
     values: Buffer,
     validity: ?Buffer,
     len: u32,

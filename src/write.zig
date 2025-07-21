@@ -142,9 +142,9 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32, 
         .time32 => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
         .time64 => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
         .timestamp => |*a| return .{ .i64 = try write_primitive_array(i64, params, &a.inner, data_section_size, has_minmax_index) },
-        .interval_year_month => |*a| return .{ .i32 = try write_primitive_array(i32, params, &a.inner, data_section_size, has_minmax_index) },
-        .interval_day_time => |*a| return .{ .interval_day_time = try write_primitive_array([2]i32, params, &a.inner, data_section_size, has_minmax_index) },
-        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_primitive_array(arr.MonthDayNano, params, &a.inner, data_section_size, has_minmax_index) },
+        .interval_year_month => |*a| return .{ .interval_year_month = try write_interval_array(i32, params, &a.inner, data_section_size) },
+        .interval_day_time => |*a| return .{ .interval_day_time = try write_interval_array([2]i32, params, &a.inner, data_section_size) },
+        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_interval_array(arr.MonthDayNano, params, &a.inner, data_section_size) },
         .list => |*a| return .{ .list = try write_list_array(.i32, params, a, data_section_size) },
         .struct_ => |*a| return .{ .struct_ = try write_struct_array(params, a, data_section_size) },
         .dense_union => |*a| return .{ .dense_union = try write_dense_union_array(params, a, data_section_size) },
@@ -159,10 +159,54 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32, 
         .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(params, a, data_section_size) },
         .binary_view => |*a| return .{ .binary = try write_binary_view_array(params, a, data_section_size, has_minmax_index) },
         .utf8_view => |*a| return .{ .binary = try write_binary_view_array(params, &a.inner, data_section_size, has_minmax_index) },
-        // .list_view => |*a| return .{ .list = try write_list_view_array(.i32, params, a, data_section_size) },
-        // .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, params, a, data_section_size) },
+        .list_view => |*a| return .{ .list = try write_list_view_array(.i32, params, a, data_section_size) },
+        .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, params, a, data_section_size) },
         .dict => |*a| return .{ .dict = try write_dict_array(params, a, data_section_size) },
     }
+}
+
+fn write_list_view_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListViewArray(index_t), data_section_size: *u32) Error!header.ListArray {
+    var builder = arrow.builder.GenericListBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+
+    const inner_arrays_builder = try params.scratch_alloc.alloc(arr.Array, array.len);
+    var num_inner_arrays: u32 = 0;
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            if (arrow.bitmap.get(validity, idx)) {
+                builder.append_item(array.sizes.ptr[idx]) catch unreachable;
+
+                inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(array.inner, @intCast(array.offsets[idx]), @intCast(array.sizes[idx]));
+                num_inner_arrays += 1;
+            } else {
+                builder.append_null() catch unreachable;
+            }
+        }
+    } else {
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            builder.append_item(array.sizes.ptr[idx]) catch unreachable;
+            inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(array.inner, @intCast(array.offsets[idx]), @intCast(array.sizes[idx]));
+            num_inner_arrays += 1;
+        }
+    }
+
+    const inner_arrays = inner_arrays_builder[0..num_inner_arrays];
+
+    const inner_dt = arrow.data_type.get_data_type(array.inner, params.scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+    const inner = try params.scratch_alloc.create(arr.Array);
+    inner.* = try arrow.concat.concat(inner_dt, inner_arrays, params.scratch_alloc, params.scratch_alloc);
+
+    const list_array = builder.finish(inner) catch unreachable;
+
+    return try write_list_array(index_t, params, &list_array, data_section_size);
 }
 
 fn scalar_to_u32(scalar: arrow.scalar.Scalar) u32 {
@@ -234,9 +278,7 @@ fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_siz
     const values = try params.header_alloc.create(header.Array);
     values.* = try write_array(params, &sliced_values, data_section_size, false);
 
-    const keys = try params.header_alloc.create(header.Array);
-
-    keys.* = switch (sliced_keys) {
+    const keys_arr: arr.Array = switch (sliced_keys) {
         .i8 => |*a| .{ .i8 = try normalize_dict_array_keys(i8, base_key, a, params.scratch_alloc) },
         .i16 => |*a| .{ .i16 = try normalize_dict_array_keys(i16, base_key, a, params.scratch_alloc) },
         .i32 => |*a| .{ .i32 = try normalize_dict_array_keys(i32, base_key, a, params.scratch_alloc) },
@@ -247,6 +289,9 @@ fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_siz
         .u64 => |*a| .{ .u64 = try normalize_dict_array_keys(u64, base_key, a, params.scratch_alloc) },
         else => unreachable,
     };
+
+    const keys = try params.header_alloc.create(header.Array);
+    keys.* = try write_array(params, &keys_arr, data_section_size, false);
 
     return .{
         .keys = keys,
@@ -266,9 +311,9 @@ fn write_run_end_encoded_array(params: Write, array: *const arr.RunEndArray, dat
     }
 
     const run_ends = try params.header_alloc.create(header.Array);
-    run_ends.* = try write_array(params, arrow.slice.slice(array.run_ends, array.offset, array.len), data_section_size, false);
-    const values = try params.header.alloc.create(header.Array);
-    values.* = try write_array(params, arrow.slice.slice(array.values, array.offset, array.len), data_section_size, false);
+    run_ends.* = try write_array(params, &arrow.slice.slice(array.run_ends, array.offset, array.len), data_section_size, false);
+    const values = try params.header_alloc.create(header.Array);
+    values.* = try write_array(params, &arrow.slice.slice(array.values, array.offset, array.len), data_section_size, false);
 
     return .{
         .run_ends = run_ends,
@@ -289,13 +334,16 @@ fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size:
         };
     }
 
-    const inner = slice_inner: {
+    const entries = slice_entries: {
         const start: u32 = @intCast(array.offsets[array.offset]);
         const end: u32 = @intCast(array.offsets[array.offset + array.len]);
 
-        const sliced_inner = arrow.slice.slice(array.inner, start, end - start);
+        const sliced = arrow.slice.slice_struct(array.entries, start, end - start);
 
-        break :slice_inner try write_array(params, &sliced_inner, data_section_size, false);
+        const entries = try params.header_alloc.create(header.StructArray);
+        entries.* = try write_struct_array(params, &sliced, data_section_size);
+
+        break :slice_entries entries;
     };
 
     const normalized_offsets = try normalize_offsets(i32, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
@@ -308,13 +356,13 @@ fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size:
     {
         var page_start: u32 = 0;
         for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-            offset_ranges[page_idx] = .{ .start = normalized_offsets[page_start], .end = normalized_offsets[page_end] };
+            offset_ranges[page_idx] = .{ .start = @intCast(normalized_offsets[page_start]), .end = @intCast(normalized_offsets[page_end]) };
             page_start = page_end;
         }
     }
 
     return .{
-        .inner = inner,
+        .entries = entries,
         .offsets = offsets,
         .len = array.len,
         .validity = validity,
@@ -344,9 +392,11 @@ fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, d
     }
 
     return .{
-        .children = children,
-        .type_ids = type_ids,
-        .len = array.inner.len,
+        .inner = .{
+            .children = children,
+            .type_ids = type_ids,
+            .len = array.inner.len,
+        },
     };
 }
 
@@ -408,11 +458,11 @@ fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, dat
         children[child_idx] = try write_array(params, c, data_section_size, false);
     }
 
-    const offset_minmax = try params.header_alloc.alloc([]const header.MinMax(u32), offsets.row_index_ends.len);
+    const offset_minmax = try params.header_alloc.alloc([]const ?header.MinMax(u32), offsets.row_index_ends.len);
 
     var page_start: u32 = 0;
     for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-        const minmaxes = try params.header_alloc.alloc(array.inner.children.len, header.MinMax(u32));
+        const minmaxes = try params.header_alloc.alloc(?header.MinMax(u32), array.inner.children.len);
 
         const page_content = normalized_offsets[page_start..page_end];
         const page_tids = tids[page_start..page_end];
@@ -429,12 +479,13 @@ fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, dat
                 }
             } else {
                 minmaxes[child_idx] = null;
+                continue;
             };
 
             for (page_content[1..], page_tids[1..]) |offset, tid| {
                 if (child_idx == tid) {
-                    mm.min = @min(mm.min, offset);
-                    mm.max = @max(mm.max, offset);
+                    mm.min = @min(mm.min, @as(u32, @bitCast(offset)));
+                    mm.max = @max(mm.max, @as(u32, @bitCast(offset)));
                 }
             }
 
@@ -457,7 +508,7 @@ fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, dat
     };
 }
 
-fn write_struct_array(params: Write, array: *const arr.StructArray, data_section_size: *u32) Error!header.Array {
+fn write_struct_array(params: Write, array: *const arr.StructArray, data_section_size: *u32) Error!header.StructArray {
     if (array.len == 0) {
         return .{
             .field_values = &.{},
@@ -495,7 +546,9 @@ fn write_fixed_size_list_array(params: Write, array: *const arr.FixedSizeListArr
 
     const start = array.offset * item_width;
     const end = start + array.len * item_width;
-    const inner = try write_array(params, &arrow.slice.slice(array.inner, start, end - start), data_section_size, false);
+
+    const inner = try params.header_alloc.create(header.Array);
+    inner.* = try write_array(params, &arrow.slice.slice(array.inner, start, end - start), data_section_size, false);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
@@ -530,9 +583,9 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
 
         var page_start: u32 = 0;
         for (data.row_index_ends, 0..) |page_end, page_idx| {
-            const page_data = arrow.slice.slice(array, page_start, page_end - page_start);
-            const min = try copy_str(arrow.minmax.minmax_fixed_size_binary(.min, page_data) orelse unreachable, params.header_alloc);
-            const max = try copy_str(arrow.minmax.minmax_fixed_size_binary(.max, page_data) orelse unreachable, params.header_alloc);
+            const page_data = arrow.slice.slice_fixed_size_binary(array, page_start, page_end - page_start);
+            const min = try copy_str(arrow.minmax.minmax_fixed_size_binary(.min, &page_data) orelse unreachable, params.header_alloc);
+            const max = try copy_str(arrow.minmax.minmax_fixed_size_binary(.max, &page_data) orelse unreachable, params.header_alloc);
             mm[page_idx] = .{ .min = min, .max = max };
             page_start = page_end;
         }
@@ -566,7 +619,9 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
 
         const sliced_inner = arrow.slice.slice(array.inner, start, end - start);
 
-        break :slice_inner try write_array(params, &sliced_inner, data_section_size, false);
+        const out = try params.header_alloc.create(header.Array);
+        out.* = try write_array(params, &sliced_inner, data_section_size, false);
+        break :slice_inner out;
     };
 
     const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
@@ -579,7 +634,7 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
     {
         var page_start: u32 = 0;
         for (offsets.row_index_ends, 0..) |page_end, page_idx| {
-            offset_ranges[page_idx] = .{ .start = normalized_offsets[page_start], .end = normalized_offsets[page_end] };
+            offset_ranges[page_idx] = .{ .start = @intCast(normalized_offsets[page_start]), .end = @intCast(normalized_offsets[page_end]) };
             page_start = page_end;
         }
     }
@@ -593,7 +648,7 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
     };
 }
 
-fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_size: *u32) Error!header.Array {
+fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_size: *u32) Error!header.BoolArray {
     if (array.len == 0) {
         return .{
             .values = empty_buffer(),
@@ -649,6 +704,25 @@ fn empty_buffer() header.Buffer {
         .row_index_ends = &.{},
         .pages = &.{},
         .compression = .no_compression,
+    };
+}
+
+fn write_interval_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32) Error!header.IntervalArray {
+    if (array.len == 0) {
+        return .{
+            .values = empty_buffer(),
+            .validity = null,
+            .len = 0,
+        };
+    }
+
+    const values = try write_buffer(params, @ptrCast(array.values[array.offset .. array.offset + array.len]), @sizeOf(T), data_section_size);
+    const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
+
+    return .{
+        .values = values,
+        .validity = validity,
+        .len = array.len,
     };
 }
 
