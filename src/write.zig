@@ -36,6 +36,8 @@ pub const Write = struct {
     /// Compression to use for individual pages.
     /// Compression will be disabled for buffers that don't compress enough to be worth it
     compression: Compression,
+    /// whether to build and write filters for dictionaries
+    dicts_with_filters: bool,
 };
 
 pub fn write(params: Write) Error!header.Header {
@@ -47,7 +49,7 @@ pub fn write(params: Write) Error!header.Header {
         const dict_array = try write_binary_array(.i32, params, dict, &data_section_size, true);
 
         if (dict.len > 0) {
-            const filter = if (dict_schema.has_filter)
+            const filter = if (params.dicts_with_filters and dict_schema.has_filter)
                 header.Filter.construct(dict, params.scratch_alloc, params.header_alloc) catch |e| {
                     if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
                 }
@@ -1042,6 +1044,7 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         .scratch_alloc = scratch_arena.allocator(),
         .chunk = &chunk_data,
         .schema = &sch,
+        .dicts_with_filters = true,
     });
 
     _ = head;
