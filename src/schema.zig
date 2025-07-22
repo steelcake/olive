@@ -37,6 +37,8 @@ pub const DictSchema = struct {
     members: []const DictMember,
     /// Whether this dictionary has an accompanying xor filter in the file header
     has_filter: bool,
+    /// length of each string in the dictionary, will be used for constructing arrow.FixedSizeBinaryArray
+    byte_width: i32,
 };
 
 pub const ValidationError = error{};

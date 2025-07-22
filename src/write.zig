@@ -29,6 +29,8 @@ pub const Write = struct {
     header_alloc: Allocator,
     /// Allocator for allocating temporary memory used for constructing the output
     scratch_alloc: Allocator,
+    /// Allocator for allocating filters, filters won't be built if this argument is null
+    filter_alloc: ?Allocator,
     /// For outputting the buffers
     data_section: []u8,
     /// Targeted page size in kilobytes
@@ -36,8 +38,6 @@ pub const Write = struct {
     /// Compression to use for individual pages.
     /// Compression will be disabled for buffers that don't compress enough to be worth it
     compression: Compression,
-    /// whether to build and write filters for dictionaries
-    dicts_with_filters: bool,
 };
 
 pub fn write(params: Write) Error!header.Header {
@@ -46,15 +46,18 @@ pub fn write(params: Write) Error!header.Header {
     const dicts = try params.header_alloc.alloc(?header.Dict, params.chunk.dicts.len);
 
     for (params.chunk.dicts, params.schema.dicts, 0..) |*dict, dict_schema, dict_idx| {
-        const dict_array = try write_binary_array(.i32, params, dict, &data_section_size, true);
+        const dict_array = try write_fixed_size_binary_array(params, dict, &data_section_size, true);
 
         if (dict.len > 0) {
-            const filter = if (params.dicts_with_filters and dict_schema.has_filter)
-                header.Filter.construct(dict, params.scratch_alloc, params.header_alloc) catch |e| {
-                    if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+            const filter = if (params.filter_alloc) |filter_alloc| build: {
+                if (dict_schema.has_filter) {
+                    break :build header.Filter.construct(dict, filter_alloc, params.scratch_alloc) catch |e| {
+                        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+                    };
+                } else {
+                    break :build null;
                 }
-            else
-                null;
+            } else null;
 
             dicts[dict_idx] = header.Dict{
                 .data = dict_array,
@@ -1012,7 +1015,7 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
     }
 
     const dicts = if (num_dict_members > 0)
-        &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true }}
+        &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true, .byte_width = 20 }}
     else
         &.{};
 
@@ -1041,10 +1044,10 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         .compression = .{ .lz4_hc = 9 },
         .page_size_kb = 1 << 20,
         .header_alloc = header_arena.allocator(),
+        .filter_alloc = header_arena.allocator(),
         .scratch_alloc = scratch_arena.allocator(),
         .chunk = &chunk_data,
         .schema = &sch,
-        .dicts_with_filters = true,
     });
 
     _ = head;

@@ -8,7 +8,11 @@ const schema_impl = @import("./schema.zig");
 const DatasetSchema = schema_impl.DatasetSchema;
 const dict_impl = @import("./dict.zig");
 
-const Error = error{ OutOfMemory, NonBinaryArrayWithDict };
+const Error = error{
+    OutOfMemory,
+    NonBinaryArrayWithDict,
+    DictElemInvalidLen,
+};
 
 pub const Table = struct {
     fields: []const arr.Array,
@@ -17,13 +21,13 @@ pub const Table = struct {
 
 pub const Chunk = struct {
     tables: []const Table,
-    dicts: []const arr.BinaryArray,
+    dicts: []const arr.FixedSizeBinaryArray,
 
     pub fn from_arrow(schema: *const DatasetSchema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
         const out = try alloc.alloc(Table, tables.len);
 
         const num_dicts = schema.dicts.len;
-        const dict_arrays = try alloc.alloc(arr.BinaryArray, num_dicts);
+        const dict_arrays = try alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
 
         for (schema.dicts, 0..) |dict, dict_idx| {
             var num_elems: usize = 0;
@@ -42,8 +46,14 @@ pub const Chunk = struct {
 
             elems = dict_impl.sort_and_dedup(elems[0..write_idx]);
 
-            const dict_array = arrow.builder.BinaryBuilder.from_slice(elems, false, alloc) catch |e| {
-                if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+            std.debug.assert(dict.byte_width > 0);
+
+            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, elems, false, alloc) catch |e| {
+                switch (e) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidSliceLength => return error.DictElemInvalidLen,
+                    else => unreachable,
+                }
             };
 
             dict_arrays[dict_idx] = dict_array;
@@ -61,8 +71,8 @@ pub const Chunk = struct {
             const fields = try alloc.alloc(arr.Array, table.len);
 
             for (table, 0..) |*array, field_idx| {
-                if (dict_impl.find_dict(schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
-                    fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(dict_arr, array, alloc) };
+                if (dict_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
+                    fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_arrays[dict_idx], array, alloc) };
                 } else {
                     fields[field_idx] = array.*;
                 }

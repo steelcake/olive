@@ -189,7 +189,10 @@ pub const Filter = struct {
         return xorf.filter_check(Fingerprint, arity, &self.header, self.fingerprints, hash_);
     }
 
-    pub fn construct(elems: *const arrow.array.BinaryArray, scratch_alloc: Allocator, filter_alloc: Allocator) xorf.ConstructError!Filter {
+    pub fn construct(elems: *const arrow.array.FixedSizeBinaryArray, filter_alloc: Allocator, scratch_alloc: Allocator) xorf.ConstructError!Filter {
+        std.debug.assert(elems.null_count == 0);
+        std.debug.assert(elems.byte_width > 0);
+
         var hashes = try scratch_alloc.alloc(u64, elems.len);
 
         var idx: u32 = elems.offset;
@@ -198,7 +201,7 @@ pub const Filter = struct {
             idx += 1;
             i += 1;
         }) {
-            hashes[i] = Filter.hash(arrow.get.get_binary(.i32, elems.data.ptr, elems.offsets.ptr, idx));
+            hashes[i] = Filter.hash(arrow.get.get_fixed_size_binary(elems.data.ptr, elems.byte_width, idx));
         }
 
         hashes = sort_and_dedup_hashes(hashes);
@@ -214,7 +217,7 @@ pub const Filter = struct {
 };
 
 pub const Dict = struct {
-    data: BinaryArray,
+    data: FixedSizeBinaryArray,
     filter: ?Filter,
 };
 
