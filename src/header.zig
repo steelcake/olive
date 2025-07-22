@@ -121,10 +121,6 @@ pub const BinaryArray = struct {
     validity: ?Buffer,
     len: u32,
     minmax: ?[]const MinMax([]const u8),
-    /// This field gives the range that a page of offsets cover.
-    /// So offset_ranges.start is the minimum offset that is in the offsets page,
-    ///  and offset_ranges.end is the next offset that comes after the last offset in the offsets page.
-    offset_ranges: []const Range,
 };
 
 pub const StructArray = struct {
@@ -144,10 +140,6 @@ pub const ListArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    /// This field gives the range that a page of offsets cover.
-    /// So offset_ranges.start is the minimum offset that is in the offsets page,
-    ///  and offset_ranges.end is the next offset that comes after the last offset in the offsets page.
-    offset_ranges: []const Range,
 };
 
 pub const UnionArray = struct {
@@ -159,10 +151,6 @@ pub const UnionArray = struct {
 pub const DenseUnionArray = struct {
     offsets: Buffer,
     inner: UnionArray,
-    /// This field gives the range that a page of offsets cover.
-    /// So offset_ranges[i][j].min is the minimum offset that is in the i-th offsets page for j-th child of the union array.
-    ///  and offset_ranges[i][j].max is the maximum offset that is in the i-th offsets page for j-th child of the union array.
-    offset_minmax: []const []const ?MinMax(u32),
 };
 
 pub const SparseUnionArray = struct {
@@ -179,10 +167,6 @@ pub const MapArray = struct {
     validity: ?Buffer,
     len: u32,
     keys_are_sorted: bool,
-    /// This field gives the range that a page of offsets cover.
-    /// So offset_ranges.start is the minimum offset that is in the offsets page,
-    ///  and offset_ranges.end is the next offset that comes after the last offset in the offsets page.
-    offset_ranges: []const Range,
 };
 
 pub const Table = struct {
