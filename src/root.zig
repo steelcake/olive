@@ -12,8 +12,10 @@ pub const header = @import("./header.zig");
 pub const compression = @import("./compression.zig");
 pub const read = @import("./read.zig");
 const dict = @import("./dict.zig");
+pub const chunk = @import("./chunk.zig");
 
 test {
+    _ = chunk;
     _ = dict;
     _ = read;
     _ = write;

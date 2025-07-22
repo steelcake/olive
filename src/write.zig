@@ -10,6 +10,7 @@ const header = @import("./header.zig");
 const schema = @import("./schema.zig");
 const compression = @import("./compression.zig");
 const dict_impl = @import("./dict.zig");
+const chunk = @import("./chunk.zig");
 
 pub const Compression = compression.Compression;
 
@@ -22,7 +23,7 @@ pub const Error = error{
 
 pub const Write = struct {
     schema: *const schema.DatasetSchema,
-    tables: []const []const arr.Array,
+    chunk: *const chunk.Chunk,
     /// Allocator that is used for allocating any dynamic memory relating to outputted header.
     /// Lifetime of the header is tied to this allocator after creation.
     header_alloc: Allocator,
@@ -40,46 +41,21 @@ pub const Write = struct {
 pub fn write(params: Write) Error!header.Header {
     var data_section_size: u32 = 0;
 
-    const num_dicts = params.schema.dicts.len;
-    const dicts = try params.header_alloc.alloc(?header.Dict, num_dicts);
-    const tables = try params.header_alloc.alloc(header.Table, params.tables.len);
+    const dicts = try params.header_alloc.alloc(?header.Dict, params.chunk.dicts.len);
 
-    const dict_arrays = try params.scratch_alloc.alloc(arr.BinaryArray, num_dicts);
+    for (params.chunk.dicts, params.schema.dicts, 0..) |*dict, dict_schema, dict_idx| {
+        const dict_array = try write_binary_array(.i32, params, dict, &data_section_size, true);
 
-    for (params.schema.dicts, 0..) |dict, dict_idx| {
-        var num_elems: usize = 0;
-
-        for (dict.members) |member| {
-            num_elems += try dict_impl.count_array_to_dict(&params.tables[member.table_index][member.field_index]);
-        }
-
-        var elems = try params.scratch_alloc.alloc([]const u8, num_elems);
-
-        var write_idx: usize = 0;
-        for (dict.members) |member| {
-            const array = &params.tables[member.table_index][member.field_index];
-            write_idx = try dict_impl.push_array_to_dict(array, write_idx, elems);
-        }
-
-        elems = dict_impl.sort_and_dedup(elems[0..write_idx]);
-
-        const dict_array = arrow.builder.BinaryBuilder.from_slice(elems, false, params.scratch_alloc) catch |e| {
-            if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-        };
-        const data = try write_binary_array(.i32, params, &dict_array, &data_section_size, true);
-
-        dict_arrays[dict_idx] = dict_array;
-
-        if (num_elems > 0) {
-            const filter = if (dict.has_filter)
-                header.Filter.construct(elems, params.scratch_alloc, params.header_alloc) catch |e| {
+        if (dict.len > 0) {
+            const filter = if (dict_schema.has_filter)
+                header.Filter.construct(dict, params.scratch_alloc, params.header_alloc) catch |e| {
                     if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
                 }
             else
                 null;
 
             dicts[dict_idx] = header.Dict{
-                .data = data,
+                .data = dict_array,
                 .filter = filter,
             };
         } else {
@@ -87,25 +63,18 @@ pub fn write(params: Write) Error!header.Header {
         }
     }
 
-    for (params.tables, 0..) |table, table_idx| {
-        const fields = try params.header_alloc.alloc(header.Array, table.len);
+    const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
-        for (table, 0..) |*array, field_idx| {
-            if (dict_impl.find_dict(params.schema.dicts, dict_arrays, table_idx, field_idx)) |dict_arr| {
-                const dicted_array = try dict_impl.apply_dict(dict_arr, array, params.scratch_alloc);
-                fields[field_idx] = .{ .u32 = try write_primitive_array(u32, params, &dicted_array, &data_section_size, true) };
-            } else {
-                fields[field_idx] = try write_array(params, array, &data_section_size, params.schema.tables[table_idx].has_minmax_index[field_idx]);
-            }
+    for (params.chunk.tables, 0..) |table, table_idx| {
+        const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
+
+        for (table.fields, 0..) |*array, field_idx| {
+            fields[field_idx] = try write_array(params, array, &data_section_size, params.schema.tables[table_idx].has_minmax_index[field_idx]);
         }
-
-        const num_rows = for (table) |*field| {
-            break arrow.length.length(field);
-        } else 0;
 
         tables[table_idx] = .{
             .fields = fields,
-            .num_rows = num_rows,
+            .num_rows = table.num_rows,
         };
     }
 
@@ -157,56 +126,13 @@ fn write_array(params: Write, array: *const arr.Array, data_section_size: *u32, 
         .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, params, &a.inner, data_section_size, has_minmax_index) },
         .large_list => |*a| return .{ .list = try write_list_array(.i64, params, a, data_section_size) },
         .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(params, a, data_section_size) },
-        .binary_view => |*a| return .{ .binary = try write_binary_view_array(params, a, data_section_size, has_minmax_index) },
-        .utf8_view => |*a| return .{ .binary = try write_binary_view_array(params, &a.inner, data_section_size, has_minmax_index) },
-        .list_view => |*a| return .{ .list = try write_list_view_array(.i32, params, a, data_section_size) },
-        .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, params, a, data_section_size) },
+        // These arrays are converted to regular binary or list arrays when importing arrow arrays to olive chunk
+        .binary_view => unreachable,
+        .utf8_view => unreachable,
+        .list_view => unreachable,
+        .large_list_view => unreachable,
         .dict => |*a| return .{ .dict = try write_dict_array(params, a, data_section_size) },
     }
-}
-
-fn write_list_view_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListViewArray(index_t), data_section_size: *u32) Error!header.ListArray {
-    var builder = arrow.builder.GenericListBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    const inner_arrays_builder = try params.scratch_alloc.alloc(arr.Array, array.len);
-    var num_inner_arrays: u32 = 0;
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.bitmap.get(validity, idx)) {
-                builder.append_item(array.sizes.ptr[idx]) catch unreachable;
-
-                inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(array.inner, @intCast(array.offsets[idx]), @intCast(array.sizes[idx]));
-                num_inner_arrays += 1;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_item(array.sizes.ptr[idx]) catch unreachable;
-            inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(array.inner, @intCast(array.offsets[idx]), @intCast(array.sizes[idx]));
-            num_inner_arrays += 1;
-        }
-    }
-
-    const inner_arrays = inner_arrays_builder[0..num_inner_arrays];
-
-    const inner_dt = arrow.data_type.get_data_type(array.inner, params.scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-    const inner = try params.scratch_alloc.create(arr.Array);
-    inner.* = try arrow.concat.concat(inner_dt, inner_arrays, params.scratch_alloc, params.scratch_alloc);
-
-    const list_array = builder.finish(inner) catch unreachable;
-
-    return try write_list_array(index_t, params, &list_array, data_section_size);
 }
 
 fn scalar_to_u32(scalar: arrow.scalar.Scalar) u32 {
@@ -668,37 +594,6 @@ fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_siz
     };
 }
 
-fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32, has_minmax_index: bool) Error!header.BinaryArray {
-    var total_size: u32 = 0;
-
-    var idx: u32 = array.offset;
-    while (idx < array.offset + array.len) : (idx += 1) {
-        total_size += @as(u32, @bitCast(array.views[idx].length));
-    }
-
-    var builder = arrow.builder.BinaryBuilder.with_capacity(total_size, array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_option(arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, idx)) catch unreachable;
-        }
-    } else {
-        idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_value(arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, idx)) catch unreachable;
-        }
-    }
-
-    const bin_array = builder.finish() catch unreachable;
-
-    return try write_binary_array(.i32, params, &bin_array, data_section_size, has_minmax_index);
-}
-
 fn empty_buffer() header.Buffer {
     return .{
         .row_index_ends = &.{},
@@ -983,12 +878,20 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
 
     for (0..3) |idx| {
         const base = (id + idx) * 3;
-        const arr0 = arrays[base % arrays.len];
-        const arr1 = arrays[(base + 1) % arrays.len];
-        const arr2 = arrays[(base + 2) % arrays.len];
+        const arr0 = &arrays[base % arrays.len];
+        const arr1 = &arrays[(base + 1) % arrays.len];
+        const arr2 = &arrays[(base + 2) % arrays.len];
+
+        const num_rows = @min(
+            arrow.length.length(arr0),
+            arrow.length.length(arr1),
+            arrow.length.length(arr2),
+        );
 
         tables[idx] = &.{
-            arr0, arr1, arr2,
+            arrow.slice.slice(arr0, 0, num_rows),
+            arrow.slice.slice(arr1, 0, num_rows),
+            arrow.slice.slice(arr2, 0, num_rows),
         };
     }
 
@@ -1070,13 +973,15 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
     try sch.validate();
     try testing.expect(sch.check(&tables));
 
+    const chunk_data = try chunk.Chunk.from_arrow(&sch, &tables, header_arena.allocator(), scratch_arena.allocator());
+
     const head = try write(.{
         .data_section = data_section,
         .compression = .{ .lz4_hc = 9 },
         .page_size_kb = 1 << 20,
         .header_alloc = header_arena.allocator(),
         .scratch_alloc = scratch_arena.allocator(),
-        .tables = &tables,
+        .chunk = &chunk_data,
         .schema = &sch,
     });
 

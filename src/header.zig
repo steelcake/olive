@@ -205,11 +205,18 @@ pub const Filter = struct {
         return xorf.filter_check(Fingerprint, arity, &self.header, self.fingerprints, hash_);
     }
 
-    pub fn construct(elems: []const []const u8, scratch_alloc: Allocator, filter_alloc: Allocator) xorf.ConstructError!Filter {
+    pub fn construct(elems: *const arrow.array.BinaryArray, scratch_alloc: Allocator, filter_alloc: Allocator) xorf.ConstructError!Filter {
         var hashes = try scratch_alloc.alloc(u64, elems.len);
-        for (0..hashes.len) |i| {
-            hashes[i] = Filter.hash(elems[i]);
+
+        var idx: u32 = elems.offset;
+        var i: u32 = 0;
+        while (idx < elems.offset + elems.len) : ({
+            idx += 1;
+            i += 1;
+        }) {
+            hashes[i] = Filter.hash(arrow.get.get_binary(.i32, elems.data.ptr, elems.offsets.ptr, idx));
         }
+
         hashes = sort_and_dedup_hashes(hashes);
         var header = xorf.calculate_header(arity, @intCast(hashes.len));
         const fingerprints = try filter_alloc.alloc(Fingerprint, header.array_length);
