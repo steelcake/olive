@@ -22,7 +22,6 @@ pub const Error = error{
 };
 
 pub const Write = struct {
-    schema: *const schema.DatasetSchema,
     chunk: *const chunk.Chunk,
     /// Allocator that is used for allocating any dynamic memory relating to outputted header.
     /// Lifetime of the header is tied to this allocator after creation.
@@ -41,11 +40,13 @@ pub const Write = struct {
 };
 
 pub fn write(params: Write) Error!header.Header {
+    const sch = params.chunk.schema;
+
     var data_section_size: u32 = 0;
 
     const dicts = try params.header_alloc.alloc(?header.Dict, params.chunk.dicts.len);
 
-    for (params.chunk.dicts, params.schema.dicts, 0..) |*dict, dict_schema, dict_idx| {
+    for (params.chunk.dicts, sch.dicts, 0..) |*dict, dict_schema, dict_idx| {
         const dict_array = try write_fixed_size_binary_array(params, dict, &data_section_size, true);
 
         if (dict.len > 0) {
@@ -74,7 +75,7 @@ pub fn write(params: Write) Error!header.Header {
         const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
 
         for (table.fields, 0..) |*array, field_idx| {
-            fields[field_idx] = try write_array(params, array, &data_section_size, params.schema.tables[table_idx].has_minmax_index[field_idx]);
+            fields[field_idx] = try write_array(params, array, &data_section_size, sch.tables[table_idx].has_minmax_index[field_idx]);
         }
 
         tables[table_idx] = .{
@@ -198,10 +199,6 @@ fn scalar_to_u32(scalar: arrow.scalar.Scalar) u32 {
 }
 
 fn normalize_dict_array_keys_impl(comptime T: type, base: T, offsets: []const T, scratch_alloc: Allocator) Error![]const T {
-    if (offsets.len == 0) {
-        return &.{};
-    }
-
     if (base == 0) {
         return offsets;
     }
@@ -233,9 +230,15 @@ fn normalize_dict_array_keys(comptime T: type, base_key: arrow.scalar.Scalar, ke
 
 fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_size: *u32) Error!header.DictArray {
     if (array.len == 0) {
+        const keys = try params.header_alloc.create(header.Array);
+        const values = try params.header_alloc.create(header.Array);
+
+        keys.* = try write_array(params, &arrow.slice.slice(array.keys, 0, 0), data_section_size, false);
+        values.* = try write_array(params, &arrow.slice.slice(array.values, 0, 0), data_section_size, false);
+
         return .{
-            .keys = null,
-            .values = null,
+            .keys = keys,
+            .values = values,
             .is_ordered = false,
             .len = 0,
         };
@@ -276,14 +279,6 @@ fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_siz
 }
 
 fn write_run_end_encoded_array(params: Write, array: *const arr.RunEndArray, data_section_size: *u32) Error!header.RunEndArray {
-    if (array.len == 0) {
-        return .{
-            .run_ends = null,
-            .values = null,
-            .len = 0,
-        };
-    }
-
     const run_ends = try params.header_alloc.create(header.Array);
     run_ends.* = try write_array(params, &arrow.slice.slice(array.run_ends, array.offset, array.len), data_section_size, false);
     const values = try params.header_alloc.create(header.Array);
@@ -297,16 +292,6 @@ fn write_run_end_encoded_array(params: Write, array: *const arr.RunEndArray, dat
 }
 
 fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size: *u32) Error!header.MapArray {
-    if (array.len == 0) {
-        return .{
-            .entries = null,
-            .offsets = empty_buffer(),
-            .validity = null,
-            .len = 0,
-            .keys_are_sorted = false,
-        };
-    }
-
     const entries = slice_entries: {
         const start: u32 = @intCast(array.offsets[array.offset]);
         const end: u32 = @intCast(array.offsets[array.offset + array.len]);
@@ -334,16 +319,6 @@ fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size:
 }
 
 fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, data_section_size: *u32) Error!header.SparseUnionArray {
-    if (array.inner.len == 0) {
-        return .{
-            .inner = .{
-                .type_ids = empty_buffer(),
-                .children = &.{},
-                .len = 0,
-            },
-        };
-    }
-
     const type_ids = try write_buffer(params, @ptrCast(array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len]), @sizeOf(i8), data_section_size);
 
     const children = try params.header_alloc.alloc(header.Array, array.inner.children.len);
@@ -365,17 +340,6 @@ fn write_sparse_union_array(params: Write, array: *const arr.SparseUnionArray, d
 fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, data_section_size: *u32) Error!header.DenseUnionArray {
     // Do a validation here since this function does some complicated operations while assuming the array is valid
     arrow.validate.validate_dense_union(array) catch unreachable;
-
-    if (array.inner.len == 0) {
-        return .{
-            .inner = .{
-                .type_ids = empty_buffer(),
-                .children = &.{},
-                .len = 0,
-            },
-            .offsets = empty_buffer(),
-        };
-    }
 
     const tids = array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len];
     const type_ids = try write_buffer(params, @ptrCast(tids), @sizeOf(i8), data_section_size);
@@ -430,14 +394,6 @@ fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, dat
 }
 
 fn write_struct_array(params: Write, array: *const arr.StructArray, data_section_size: *u32) Error!header.StructArray {
-    if (array.len == 0) {
-        return .{
-            .field_values = &.{},
-            .validity = null,
-            .len = 0,
-        };
-    }
-
     const field_values = try params.header_alloc.alloc(header.Array, array.field_values.len);
 
     for (array.field_values, 0..) |*field, idx| {
@@ -455,14 +411,6 @@ fn write_struct_array(params: Write, array: *const arr.StructArray, data_section
 }
 
 fn write_fixed_size_list_array(params: Write, array: *const arr.FixedSizeListArray, data_section_size: *u32) Error!header.FixedSizeListArray {
-    if (array.len == 0) {
-        return .{
-            .inner = null,
-            .validity = null,
-            .len = 0,
-        };
-    }
-
     const item_width: u32 = @intCast(array.item_width);
 
     const start = array.offset * item_width;
@@ -481,15 +429,6 @@ fn write_fixed_size_list_array(params: Write, array: *const arr.FixedSizeListArr
 }
 
 fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinaryArray, data_section_size: *u32, has_minmax_index: bool) Error!header.FixedSizeBinaryArray {
-    if (array.len == 0) {
-        return .{
-            .data = empty_buffer(),
-            .validity = null,
-            .len = 0,
-            .minmax = null,
-        };
-    }
-
     const byte_width: u32 = @intCast(array.byte_width);
 
     const start = array.offset * byte_width;
@@ -524,15 +463,6 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
 fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericListArray(index_t), data_section_size: *u32) Error!header.ListArray {
     const I = index_t.to_type();
 
-    if (array.len == 0) {
-        return .{
-            .inner = null,
-            .offsets = empty_buffer(),
-            .validity = null,
-            .len = 0,
-        };
-    }
-
     const inner = slice_inner: {
         const start: u32 = @intCast(array.offsets[array.offset]);
         const end: u32 = @intCast(array.offsets[array.offset + array.len]);
@@ -558,14 +488,6 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
 }
 
 fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_size: *u32) Error!header.BoolArray {
-    if (array.len == 0) {
-        return .{
-            .values = empty_buffer(),
-            .validity = null,
-            .len = 0,
-        };
-    }
-
     const aligned_values = try maybe_align_bitmap(array.values, array.offset, array.len, params.scratch_alloc);
     const values = try write_buffer(params, aligned_values, @sizeOf(u8), data_section_size);
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
@@ -617,14 +539,6 @@ fn empty_buffer() header.Buffer {
 }
 
 fn write_interval_array(comptime T: type, params: Write, array: *const arr.PrimitiveArray(T), data_section_size: *u32) Error!header.IntervalArray {
-    if (array.len == 0) {
-        return .{
-            .values = empty_buffer(),
-            .validity = null,
-            .len = 0,
-        };
-    }
-
     const values = try write_buffer(params, @ptrCast(array.values[array.offset .. array.offset + array.len]), @sizeOf(T), data_section_size);
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
@@ -841,7 +755,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
     };
 
     const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
-    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(I), data_section_size);
+    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0 .. array.len + 1]), @sizeOf(I), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
@@ -1047,7 +961,6 @@ fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
         .filter_alloc = header_arena.allocator(),
         .scratch_alloc = scratch_arena.allocator(),
         .chunk = &chunk_data,
-        .schema = &sch,
     });
 
     _ = head;

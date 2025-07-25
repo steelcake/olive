@@ -22,6 +22,7 @@ pub const Table = struct {
 pub const Chunk = struct {
     tables: []const Table,
     dicts: []const arr.FixedSizeBinaryArray,
+    schema: *const schema_impl.DatasetSchema,
 
     pub fn from_arrow(schema: *const DatasetSchema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
         const out = try alloc.alloc(Table, tables.len);
@@ -87,6 +88,7 @@ pub const Chunk = struct {
         return .{
             .tables = out,
             .dicts = dict_arrays,
+            .schema = schema,
         };
     }
 };

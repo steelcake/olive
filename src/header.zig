@@ -103,15 +103,15 @@ pub const FixedSizeBinaryArray = struct {
 };
 
 pub const DictArray = struct {
-    keys: ?*const Array,
-    values: ?*const Array,
+    keys: *const Array,
+    values: *const Array,
     is_ordered: bool,
     len: u32,
 };
 
 pub const RunEndArray = struct {
-    run_ends: ?*const Array,
-    values: ?*const Array,
+    run_ends: *const Array,
+    values: *const Array,
     len: u32,
 };
 
@@ -130,13 +130,13 @@ pub const StructArray = struct {
 };
 
 pub const FixedSizeListArray = struct {
-    inner: ?*const Array,
+    inner: *const Array,
     validity: ?Buffer,
     len: u32,
 };
 
 pub const ListArray = struct {
-    inner: ?*const Array,
+    inner: *const Array,
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
@@ -162,7 +162,7 @@ pub const NullArray = struct {
 };
 
 pub const MapArray = struct {
-    entries: ?*const StructArray,
+    entries: *const StructArray,
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
