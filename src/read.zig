@@ -14,6 +14,7 @@ const Error = error{
     OutOfMemory,
     DataSectionTooSmall,
     DecompressFail,
+    UnexpectedArrayType,
 };
 
 pub const Read = struct {
@@ -25,13 +26,13 @@ pub const Read = struct {
 };
 
 pub fn read(params: Read) Error!chunk.Chunk {
-    const tables = try params.alloc.alloc(params.schema.tables.len);
-    const dicts = try params.alloc.alloc(params.schema.dicts.len);
+    const tables = try params.alloc.alloc(chunk.Table, params.schema.tables.len);
+    const dicts = try params.alloc.alloc(arr.FixedSizeBinaryArray, params.schema.dicts.len);
 
     for (params.schema.tables, params.header.tables, 0..) |table_schema, table_header, table_idx| {
-        const fields = try params.alloc.alloc(table_header.fields.len);
+        const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 
-        for (table_schema.data_types, table_header.fields, 0..) |field_type, field_header, field_idx| {
+        for (table_schema.data_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
             fields[field_idx] = try read_array(params, field_type, field_header);
         }
 
@@ -48,10 +49,19 @@ pub fn read(params: Read) Error!chunk.Chunk {
     };
 }
 
+// get named field of header.Array but return error if content is unexpected
+fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Error!*const @TypeOf(@field(header.Array, field_name)) {
+    if (@intFromEnum(field_header.*) == @intFromEnum(@field(header.Array, field_name))) {
+        return &@field(field_header.*, field_name);
+    } else {
+        return Error.UnexpectedArrayType;
+    }
+}
+
 fn read_array(params: Read, field_type: DataType, field_header: *const header.Array) Error!arr.Array {
     return switch (field_type) {
-        .null => .{ .null = .{ .len = field_header.null.len } },
-        .i8 => .{ .i8 = try read_primitive(i8, params, &field_header.i8) },
+        .null => .{ .null = try read_null_array(field_header) },
+        .i8 => .{ .i8 = try read_primitive(i8, params, &fh_c("i8", field_header)) },
         .i16 => .{ .i16 = try read_primitive(i16, params, &field_header.i16) },
         .i32 => .{ .i32 = try read_primitive(i32, params, &field_header.i32) },
         .i64 => .{ .i64 = try read_primitive(i64, params, &field_header.i64) },
@@ -76,15 +86,43 @@ fn read_array(params: Read, field_type: DataType, field_header: *const header.Ar
         .timestamp => |ts| .{ .timestamp = .{ .ts = ts, .inner = try read_primitive(i64, params, &field_header.i64) } },
         .interval_year_month => .{ .interval_year_month = try read_interval(.year_month, params, &field_header.interval_year_month) },
         .interval_day_time => .{ .interval_day_time = try read_interval(.day_time, params, &field_header.interval_day_time) },
-        .interval_year_month => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, &field_header.interval_month_day_nano) },
+        .interval_month_day_nano => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, &field_header.interval_month_day_nano) },
         .list => .{ .list = try read_list(.i32, params, &field_header.list) },
+        else => unreachable,
+    };
+}
+
+fn read_null_array(field_header: *const header.Array) Error!arr.NullArray {
+    return switch (field_header.*) {
+        .null => |*fh| .{ .len = fh.len },
+        else => Error.UnexpectedArrayType,
     };
 }
 
 fn read_list(comptime index_t: arr.IndexType, params: Read, inner_type: DataType, field_header: *const header.ListArray) Error!arr.GenericListArray(index_t) {
     const I = index_t.to_type();
+
     const len = field_header.len;
-    const inner = try read(params, inner_type, field_header.inner);
+
+    const inner = try params.alloc.create(arr.Array);
+    inner.* = try read(params, inner_type, field_header.inner);
+    const offsets = try read_buffer(I, params, field_header.offsets);
+
+    const validity = try read_validity(params, field_header.validity);
+
+    const null_count = if (validity) |v|
+        arrow.bitmap.count_nulls(v, 0, len)
+    else
+        0;
+
+    return .{
+        .null_count = null_count,
+        .validity = validity,
+        .inner = inner,
+        .offsets = offsets,
+        .len = len,
+        .offset = 0,
+    };
 }
 
 fn read_interval(comptime interval_t: arr.IntervalType, params: Read, field_header: *const header.IntervalArray) Error!arr.IntervalArray(interval_t) {
@@ -131,7 +169,7 @@ fn read_bool(params: Read, field_header: *const header.BoolArray) Error!arr.Bool
     };
 }
 
-fn read_binary(comptime index_t: arr.IndexType, params: Read, field_header: *const header.BinaryArray) Error!arr.BinaryArray(index_t) {
+fn read_binary(comptime index_t: arr.IndexType, params: Read, field_header: *const header.BinaryArray) Error!arr.GenericBinaryArray(index_t) {
     const I = index_t.to_type();
 
     const len = field_header.len;

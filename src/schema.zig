@@ -3,6 +3,13 @@ const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
 const Compression = @import("./compression.zig");
 
+pub fn can_have_minmax_index(data_type: DataType) bool {
+    switch (data_type) {
+        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f16, .f32, .f64, .binary, .utf8, .decimal32, .decimal64, .decimal128, .decimal256, .large_binary, .large_utf8, .binary_view, .utf8_view, .fixed_size_binary => true,
+        else => false,
+    }
+}
+
 pub const TableSchema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
