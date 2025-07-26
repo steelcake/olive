@@ -185,7 +185,7 @@ fn read_list_view(comptime index_t: arr.IndexType, params: Read, inner_t: DataTy
         return Error.ValidationError;
     };
 
-    var builder = arrow.builder.GenericListViewBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+    var builder = arrow.builder.GenericListViewBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
 

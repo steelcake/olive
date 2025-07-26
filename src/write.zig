@@ -304,7 +304,7 @@ fn write_map_array(params: Write, array: *const arr.MapArray, data_section_size:
     };
 
     const normalized_offsets = try normalize_offsets(i32, array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
-    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(i32), data_section_size);
+    const offsets = try write_buffer(params, @ptrCast(normalized_offsets), @sizeOf(i32), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
@@ -507,9 +507,20 @@ fn write_bool_array(params: Write, array: *const arr.BoolArray, data_section_siz
 fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, data_section_size: *u32, has_minmax_index: bool) Error!header.BinaryArray {
     var total_size: u32 = 0;
 
-    var idx: u32 = array.offset;
-    while (idx < array.offset + array.len) : (idx += 1) {
-        total_size += @as(u32, @bitCast(array.views[idx].length));
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            if (arrow.bitmap.get(validity, idx)) {
+                total_size += @as(u32, @bitCast(array.views[idx].length));
+            }
+        }
+    } else {
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            total_size += @as(u32, @bitCast(array.views[idx].length));
+        }
     }
 
     var builder = arrow.builder.LargeBinaryBuilder.with_capacity(total_size, array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
@@ -519,12 +530,12 @@ fn write_binary_view_array(params: Write, array: *const arr.BinaryViewArray, dat
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
 
-        idx = array.offset;
+        var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             builder.append_option(arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, idx)) catch unreachable;
         }
     } else {
-        idx = array.offset;
+        var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             builder.append_value(arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, idx)) catch unreachable;
         }
