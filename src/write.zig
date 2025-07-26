@@ -474,7 +474,7 @@ fn write_list_array(comptime index_t: arr.IndexType, params: Write, array: *cons
     };
 
     const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
-    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0..array.len]), @sizeOf(I), data_section_size);
+    const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0 .. array.len + 1]), @sizeOf(I), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 

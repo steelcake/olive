@@ -89,6 +89,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     const page_size_kb = (try input.int(u32)) % (1 << 24) + 1;
 
     const data_section = try alloc.alloc(u8, 1 << 28);
+    defer alloc.free(data_section);
 
     const header = write: {
         var scratch_arena = ArenaAllocator.init(alloc);
