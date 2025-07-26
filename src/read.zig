@@ -23,6 +23,7 @@ const Error = error{
     UnexpectedArrayType,
     LengthMismatch,
     BufferTooBig,
+    ValidationError,
 };
 
 pub const Read = struct {
@@ -57,71 +58,106 @@ pub fn read(params: Read) Error!chunk.Chunk {
     };
 }
 
-fn fh_c_type(comptime field_name: []const u8) type {
-    for (@typeInfo(header.Array).@"union".fields) |field| {
-        if (std.mem.eql(u8, field.name, field_name)) {
-            return field.type;
-        }
-    }
+fn check_field_type(field_type: DataType, field_header: *const header.Array) Error!void {
+    const expected: @typeInfo(header.Array).@"union".tag_type.? = switch (field_type) {
+        .null => .null,
+        .i8 => .i8,
+        .i16 => .i16,
+        .i32 => .i32,
+        .i64 => .i64,
+        .u8 => .u8,
+        .u16 => .u16,
+        .u32 => .u32,
+        .u64 => .u64,
+        .f16 => .f16,
+        .f32 => .f32,
+        .f64 => .f64,
+        .binary => .binary,
+        .utf8 => .binary,
+        .bool => .bool,
+        .decimal32 => .i32,
+        .decimal64 => .i64,
+        .decimal128 => .i128,
+        .decimal256 => .i256,
+        .date32 => .i32,
+        .date64 => .i64,
+        .time32 => .i32,
+        .time64 => .i64,
+        .timestamp => .i64,
+        .interval_year_month => .interval_year_month,
+        .interval_day_time => .interval_day_time,
+        .interval_month_day_nano => .interval_month_day_nano,
+        .list => .list,
+        .struct_ => .struct_,
+        .dense_union => .dense_union,
+        .sparse_union => .sparse_union,
+        .fixed_size_binary => .fixed_size_binary,
+        .fixed_size_list => .fixed_size_list,
+        .map => .map,
+        .duration => .i64,
+        .large_binary => .binary,
+        .large_utf8 => .binary,
+        .large_list => .list,
+        .run_end_encoded => .run_end_encoded,
+        .binary_view => .binary,
+        .utf8_view => .binary,
+        .list_view => .list,
+        .large_list_view => .list,
+        .dict => .dict,
+    };
 
-    unreachable;
-}
-
-// get named field of header.Array but return error if content is unexpected
-fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Error!*const fh_c_type(field_name) {
-    if (@intFromEnum(field_header.*) == @intFromEnum(@field(header.Array, field_name))) {
-        return &@field(field_header.*, field_name);
-    } else {
+    if (expected != field_header.*) {
         return Error.UnexpectedArrayType;
     }
 }
 
 fn read_array(params: Read, field_type: DataType, field_header: *const header.Array) Error!arr.Array {
+    try check_field_type(field_type, field_header);
     return switch (field_type) {
-        .null => .{ .null = .{ .len = (try fh_c("null", field_header)).len } },
-        .i8 => .{ .i8 = try read_primitive(i8, params, try fh_c("i8", field_header)) },
-        .i16 => .{ .i16 = try read_primitive(i16, params, try fh_c("i16", field_header)) },
-        .i32 => .{ .i32 = try read_primitive(i32, params, try fh_c("i32", field_header)) },
-        .i64 => .{ .i64 = try read_primitive(i64, params, try fh_c("i64", field_header)) },
-        .u8 => .{ .u8 = try read_primitive(u8, params, try fh_c("u8", field_header)) },
-        .u16 => .{ .u16 = try read_primitive(u16, params, try fh_c("u16", field_header)) },
-        .u32 => .{ .u32 = try read_primitive(u32, params, try fh_c("u32", field_header)) },
-        .u64 => .{ .u64 = try read_primitive(u64, params, try fh_c("u64", field_header)) },
-        .f16 => .{ .f16 = try read_primitive(f16, params, try fh_c("f16", field_header)) },
-        .f32 => .{ .f32 = try read_primitive(f32, params, try fh_c("f32", field_header)) },
-        .f64 => .{ .f64 = try read_primitive(f64, params, try fh_c("f64", field_header)) },
-        .binary => .{ .binary = try read_binary(.i32, params, try fh_c("binary", field_header)) },
-        .utf8 => .{ .utf8 = .{ .inner = try read_binary(.i32, params, try fh_c("binary", field_header)) } },
-        .bool => .{ .bool = try read_bool(params, try fh_c("bool", field_header)) },
-        .decimal32 => |dec_params| .{ .decimal32 = .{ .params = dec_params, .inner = try read_primitive(i32, params, try fh_c("i32", field_header)) } },
-        .decimal64 => |dec_params| .{ .decimal64 = .{ .params = dec_params, .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
-        .decimal128 => |dec_params| .{ .decimal128 = .{ .params = dec_params, .inner = try read_primitive(i128, params, try fh_c("i128", field_header)) } },
-        .decimal256 => |dec_params| .{ .decimal256 = .{ .params = dec_params, .inner = try read_primitive(i256, params, try fh_c("i256", field_header)) } },
-        .date32 => .{ .date32 = .{ .inner = try read_primitive(i32, params, try fh_c("i32", field_header)) } },
-        .date64 => .{ .date64 = .{ .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
-        .time32 => |unit| .{ .time32 = .{ .unit = unit, .inner = try read_primitive(i32, params, try fh_c("i32", field_header)) } },
-        .time64 => |unit| .{ .time64 = .{ .unit = unit, .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
-        .timestamp => |ts| .{ .timestamp = .{ .ts = ts, .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
-        .interval_year_month => .{ .interval_year_month = try read_interval(.year_month, params, try fh_c("interval_year_month", field_header)) },
-        .interval_day_time => .{ .interval_day_time = try read_interval(.day_time, params, try fh_c("interval_day_time", field_header)) },
-        .interval_month_day_nano => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, try fh_c("interval_month_day_nano", field_header)) },
-        .list => |inner_t| .{ .list = try read_list(.i32, params, inner_t.*, try fh_c("list", field_header)) },
-        .struct_ => |struct_t| .{ .struct_ = try read_struct(params, struct_t.*, try fh_c("struct_", field_header)) },
-        .dense_union => |union_t| .{ .dense_union = try read_dense_union(params, union_t.*, try fh_c("dense_union", field_header)) },
-        .sparse_union => |union_t| .{ .sparse_union = try read_sparse_union(params, union_t.*, try fh_c("sparse_union", field_header)) },
-        .fixed_size_binary => |byte_width| .{ .fixed_size_binary = try read_fixed_size_binary(params, byte_width, try fh_c("fixed_size_binary", field_header)) },
-        .fixed_size_list => |fsl_t| .{ .fixed_size_list = try read_fixed_size_list(params, fsl_t.*, try fh_c("fixed_size_list", field_header)) },
-        .map => |map_t| .{ .map = try read_map(params, map_t.*, try fh_c("map", field_header)) },
-        .duration => |unit| .{ .duration = .{ .unit = unit, .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
-        .large_binary => .{ .binary = try read_binary(.i64, params, try fh_c("binary", field_header)) },
-        .large_utf8 => .{ .utf8 = .{ .inner = try read_binary(.i64, params, try fh_c("binary", field_header)) } },
-        .large_list => |inner_t| .{ .list = try read_list(.i64, params, inner_t.*, try fh_c("list", field_header)) },
-        .run_end_encoded => |ree_t| .{ .run_end_encoded = try read_run_end_encoded(params, ree_t.*, try fh_c("run_end_encoded", field_header)) },
-        .binary_view => .{ .binary_view = try read_binary_view(params, try fh_c("binary", field_header)) },
-        .utf8_view => .{ .utf8_view = .{ .inner = try read_binary_view(params, try fh_c("binary", field_header)) } },
-        .list_view => .{ .list_view = try read_list_view(.i32, params, try fh_c("list", field_header)) },
-        .large_list_view => .{ .large_list_view = try read_list_view(.i64, params, try fh_c("list", field_header)) },
-        .dict => |dict_t| .{ .dict = try read_dict(params, dict_t.*, try fh_c("dict", field_header)) },
+        .null => .{ .null = .{ .len = field_header.null.len } },
+        .i8 => .{ .i8 = try read_primitive(i8, params, &field_header.i8) },
+        .i16 => .{ .i16 = try read_primitive(i16, params, &field_header.i16) },
+        .i32 => .{ .i32 = try read_primitive(i32, params, &field_header.i32) },
+        .i64 => .{ .i64 = try read_primitive(i64, params, &field_header.i64) },
+        .u8 => .{ .u8 = try read_primitive(u8, params, &field_header.u8) },
+        .u16 => .{ .u16 = try read_primitive(u16, params, &field_header.u16) },
+        .u32 => .{ .u32 = try read_primitive(u32, params, &field_header.u32) },
+        .u64 => .{ .u64 = try read_primitive(u64, params, &field_header.u64) },
+        .f16 => .{ .f16 = try read_primitive(f16, params, &field_header.f16) },
+        .f32 => .{ .f32 = try read_primitive(f32, params, &field_header.f32) },
+        .f64 => .{ .f64 = try read_primitive(f64, params, &field_header.f64) },
+        .binary => .{ .binary = try read_binary(.i32, params, &field_header.binary) },
+        .utf8 => .{ .utf8 = .{ .inner = try read_binary(.i32, params, &field_header.binary) } },
+        .bool => .{ .bool = try read_bool(params, &field_header.bool) },
+        .decimal32 => |dec_params| .{ .decimal32 = .{ .params = dec_params, .inner = try read_primitive(i32, params, &field_header.i32) } },
+        .decimal64 => |dec_params| .{ .decimal64 = .{ .params = dec_params, .inner = try read_primitive(i64, params, &field_header.i64) } },
+        .decimal128 => |dec_params| .{ .decimal128 = .{ .params = dec_params, .inner = try read_primitive(i128, params, &field_header.i128) } },
+        .decimal256 => |dec_params| .{ .decimal256 = .{ .params = dec_params, .inner = try read_primitive(i256, params, &field_header.i256) } },
+        .date32 => .{ .date32 = .{ .inner = try read_primitive(i32, params, &field_header.i32) } },
+        .date64 => .{ .date64 = .{ .inner = try read_primitive(i64, params, &field_header.i64) } },
+        .time32 => |unit| .{ .time32 = .{ .unit = unit, .inner = try read_primitive(i32, params, &field_header.i32) } },
+        .time64 => |unit| .{ .time64 = .{ .unit = unit, .inner = try read_primitive(i64, params, &field_header.i64) } },
+        .timestamp => |ts| .{ .timestamp = .{ .ts = ts, .inner = try read_primitive(i64, params, &field_header.i64) } },
+        .interval_year_month => .{ .interval_year_month = try read_interval(.year_month, params, &field_header.interval_year_month) },
+        .interval_day_time => .{ .interval_day_time = try read_interval(.day_time, params, &field_header.interval_day_time) },
+        .interval_month_day_nano => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, &field_header.interval_month_day_nano) },
+        .list => |inner_t| .{ .list = try read_list(.i32, params, inner_t.*, &field_header.list) },
+        .struct_ => |struct_t| .{ .struct_ = try read_struct(params, struct_t.*, &field_header.struct_) },
+        .dense_union => |union_t| .{ .dense_union = try read_dense_union(params, union_t.*, &field_header.dense_union) },
+        .sparse_union => |union_t| .{ .sparse_union = try read_sparse_union(params, union_t.*, &field_header.sparse_union) },
+        .fixed_size_binary => |byte_width| .{ .fixed_size_binary = try read_fixed_size_binary(params, byte_width, &field_header.fixed_size_binary) },
+        .fixed_size_list => |fsl_t| .{ .fixed_size_list = try read_fixed_size_list(params, fsl_t.*, &field_header.fixed_size_list) },
+        .map => |map_t| .{ .map = try read_map(params, map_t.*, &field_header.map) },
+        .duration => |unit| .{ .duration = .{ .unit = unit, .inner = try read_primitive(i64, params, &field_header.i64) } },
+        .large_binary => .{ .large_binary = try read_binary(.i64, params, &field_header.binary) },
+        .large_utf8 => .{ .large_utf8 = .{ .inner = try read_binary(.i64, params, &field_header.binary) } },
+        .large_list => |inner_t| .{ .large_list = try read_list(.i64, params, inner_t.*, &field_header.list) },
+        .run_end_encoded => |ree_t| .{ .run_end_encoded = try read_run_end_encoded(params, ree_t.*, &field_header.run_end_encoded) },
+        .binary_view => .{ .binary_view = try read_binary_view(params, &field_header.binary) },
+        .utf8_view => .{ .utf8_view = .{ .inner = try read_binary_view(params, &field_header.binary) } },
+        .list_view => |inner_t| .{ .list_view = try read_list_view(.i32, params, inner_t.*, &field_header.list) },
+        .large_list_view => |inner_t| .{ .large_list_view = try read_list_view(.i64, params, inner_t.*, &field_header.list) },
+        .dict => |dict_t| .{ .dict = try read_dict(params, dict_t.*, &field_header.dict) },
     };
 }
 
@@ -141,11 +177,13 @@ fn read_dict(params: Read, dict_t: DictType, field_header: *const header.DictArr
     };
 }
 
-fn read_list_view(comptime index_t: arr.IndexType, params: Read, field_header: *const header.ListArray) Error!arr.GenericListViewArray(index_t) {
-    const array = try read_list(index_t, params, field_header);
+fn read_list_view(comptime index_t: arr.IndexType, params: Read, inner_t: DataType, field_header: *const header.ListArray) Error!arr.GenericListViewArray(index_t) {
+    const array = try read_list(index_t, params, inner_t, field_header);
 
     // validate to avoid unsafety when handling the array
-    try arrow.validate.validate_binary(&array);
+    arrow.validate.validate_list(index_t, &array) catch {
+        return Error.ValidationError;
+    };
 
     var builder = arrow.builder.GenericListViewBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
@@ -160,7 +198,7 @@ fn read_list_view(comptime index_t: arr.IndexType, params: Read, field_header: *
                 const start = array.offsets.ptr[idx];
                 const end = array.offsets.ptr[idx + 1];
                 const len = end - start;
-                builder.append_item(len) catch unreachable;
+                builder.append_item(start, len) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -171,7 +209,7 @@ fn read_list_view(comptime index_t: arr.IndexType, params: Read, field_header: *
             const start = array.offsets.ptr[idx];
             const end = array.offsets.ptr[idx + 1];
             const len = end - start;
-            builder.append_item(len) catch unreachable;
+            builder.append_item(start, len) catch unreachable;
         }
     }
 
@@ -188,7 +226,9 @@ fn read_binary_view(params: Read, field_header: *const header.BinaryArray) Error
     }, field_header);
 
     // validate to avoid unsafety when handling the array
-    try arrow.validate.validate_binary(&array);
+    arrow.validate.validate_binary(.i64, &array) catch {
+        return Error.ValidationError;
+    };
 
     if (array.data.len > std.math.maxInt(u32)) {
         return Error.BufferTooBig;
@@ -215,12 +255,12 @@ fn read_binary_view(params: Read, field_header: *const header.BinaryArray) Error
 
         idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_option(arrow.get.get_binary_opt(array.data.ptr, array.offsets.ptr, validity, idx)) catch unreachable;
+            builder.append_option(arrow.get.get_binary_opt(.i64, array.data.ptr, array.offsets.ptr, validity, idx)) catch unreachable;
         }
     } else {
         idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_value(arrow.get.get_binary(array.data.ptr, array.offsets.ptr, idx)) catch unreachable;
+            builder.append_value(arrow.get.get_binary(.i64, array.data.ptr, array.offsets.ptr, idx)) catch unreachable;
         }
     }
 
