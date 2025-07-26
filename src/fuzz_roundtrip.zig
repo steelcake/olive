@@ -23,7 +23,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     defer chunk_arena.deinit();
     const chunk_alloc = chunk_arena.allocator();
 
-    const tables = try chunk_alloc.alloc(chunk_mod.Table, num_tables);
+    const tables = try chunk_alloc.alloc([]const arr.Array, num_tables);
     for (0..num_tables) |table_idx| {
         const num_fields = (try input.int(u8)) % 10;
         const num_rows = try input.int(u8);
@@ -33,10 +33,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
             fields[field_idx] = try input.make_array(num_rows, chunk_alloc);
         }
 
-        tables[table_idx] = .{
-            .num_rows = num_rows,
-            .fields = fields,
-        };
+        tables[table_idx] = fields;
     }
 
     var prng = try input.make_prng();
@@ -45,14 +42,15 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     const table_schemas = try chunk_alloc.alloc(TableSchema, num_tables);
     const table_names = try chunk_alloc.alloc([:0]const u8, num_tables);
     for (0..num_tables) |table_idx| {
-        const num_fields = tables[table_idx].fields.len;
+        const fields = tables[table_idx];
+        const num_fields = fields.len;
 
         const has_minmax_index = try chunk_alloc.alloc(bool, num_fields);
         const data_types = try chunk_alloc.alloc(data_type.DataType, num_fields);
         const field_names = try chunk_alloc.alloc([:0]const u8, num_fields);
 
         for (0..num_fields) |field_idx| {
-            const dt = try data_type.get_data_type(&tables[table_idx].fields[field_idx], chunk_alloc);
+            const dt = try data_type.get_data_type(&fields[field_idx], chunk_alloc);
 
             data_types[field_idx] = dt;
             has_minmax_index[field_idx] = schema_mod.can_have_minmax_index(dt) and (try input.boolean());
@@ -73,10 +71,11 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         .dicts = &.{},
     };
 
-    const chunk = Chunk{
-        .tables = tables,
-        .schema = &schema,
-        .dicts = &.{},
+    const chunk = make_chunk: {
+        var scratch_arena = ArenaAllocator.init(alloc);
+        defer scratch_arena.deinit();
+        const scratch_alloc = scratch_arena.allocator();
+        break :make_chunk try Chunk.from_arrow(&schema, tables, chunk_alloc, scratch_alloc);
     };
 
     var header_arena = ArenaAllocator.init(alloc);
@@ -87,7 +86,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     defer filter_arena.deinit();
     const filter_alloc = filter_arena.allocator();
 
-    const page_size_kb = (try input.int(u32)) % (1 << 24);
+    const page_size_kb = (try input.int(u32)) % (1 << 24) + 1;
 
     const data_section = try alloc.alloc(u8, 1 << 28);
 

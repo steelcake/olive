@@ -4,7 +4,6 @@ const arrow = @import("arrow");
 const arr = arrow.array;
 const ArrayList = std.ArrayListUnmanaged;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const testing = std.testing;
 
 const header = @import("./header.zig");
 const schema = @import("./schema.zig");
@@ -703,8 +702,8 @@ fn write_buffer(params: Write, buffer: []const u8, elem_size: u8, data_section_s
     var buffer_offset: u32 = 0;
     var page_idx: usize = 0;
     while (buffer_offset < buffer_len) {
-        const page_len = @min(max_page_len, buffer_len);
-        const page: []const u8 = buffer[buffer_offset .. buffer_offset + page_len];
+        const page_len = @min(max_page_len, buffer_len - buffer_offset);
+        const page: []const u8 = buffer[elem_size * buffer_offset .. elem_size * (buffer_offset + page_len)];
 
         const page_offset = data_section_size.*;
         const compressed_size = try write_page(.{
@@ -848,151 +847,5 @@ fn compress(src: []const u8, dst: []u8, compr: *?Compression, compr_cfg: Compres
     } else {
         compr.* = .no_compression;
         return try compression.compress(src, dst, .no_compression);
-    }
-}
-
-fn run_test_impl(arrays: []const arr.Array, id: usize) !void {
-    var tables: [3][]const arr.Array = undefined;
-
-    for (0..3) |idx| {
-        const base = (id + idx) * 3;
-        const arr0 = &arrays[base % arrays.len];
-        const arr1 = &arrays[(base + 1) % arrays.len];
-        const arr2 = &arrays[(base + 2) % arrays.len];
-
-        const num_rows = @min(
-            arrow.length.length(arr0),
-            arrow.length.length(arr1),
-            arrow.length.length(arr2),
-        );
-
-        tables[idx] = &.{
-            arrow.slice.slice(arr0, 0, num_rows),
-            arrow.slice.slice(arr1, 0, num_rows),
-            arrow.slice.slice(arr2, 0, num_rows),
-        };
-    }
-
-    const table_names = &.{ "a", "b", "c" };
-
-    const field_names = &.{ "q", "w", "e" };
-
-    var dt_arena = ArenaAllocator.init(testing.allocator);
-    defer dt_arena.deinit();
-    const dt_alloc = dt_arena.allocator();
-
-    var data_types: [3][]const arrow.data_type.DataType = undefined;
-
-    for (0..3) |idx| {
-        data_types[idx] = &.{
-            try arrow.data_type.get_data_type(&tables[idx][0], dt_alloc),
-            try arrow.data_type.get_data_type(&tables[idx][1], dt_alloc),
-            try arrow.data_type.get_data_type(&tables[idx][2], dt_alloc),
-        };
-    }
-
-    var has_minmax_index: [3][3]bool = undefined;
-    for (0..3) |table_idx| {
-        for (0..3) |field_idx| {
-            has_minmax_index[table_idx][field_idx] = switch (data_types[table_idx][field_idx]) {
-                .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .decimal32, .decimal64, .decimal128, .decimal256, .f16, .f32, .f64, .binary, .utf8, .large_binary, .large_utf8, .binary_view, .utf8_view, .fixed_size_binary => true,
-                else => false,
-            };
-        }
-    }
-
-    var table_schemas: [3]schema.TableSchema = undefined;
-    for (0..3) |idx| {
-        table_schemas[idx] = .{
-            .field_names = field_names,
-            .data_types = data_types[idx],
-            .has_minmax_index = &has_minmax_index[idx],
-        };
-    }
-
-    var dict_members: [9]schema.DictMember = undefined;
-    var num_dict_members: usize = 0;
-
-    for (0..3) |table_idx| {
-        for (0..3) |field_idx| {
-            switch (tables[table_idx][field_idx]) {
-                .fixed_size_binary, .binary, .large_binary, .utf8, .large_utf8, .binary_view, .utf8_view => {
-                    dict_members[num_dict_members] = .{
-                        .table_index = @intCast(table_idx),
-                        .field_index = @intCast(field_idx),
-                    };
-                    num_dict_members += 1;
-                },
-                else => {},
-            }
-        }
-    }
-
-    const dicts = if (num_dict_members > 0)
-        &.{schema.DictSchema{ .members = dict_members[0..num_dict_members], .has_filter = true, .byte_width = 20 }}
-    else
-        &.{};
-
-    const data_section = try testing.allocator.alloc(u8, 1 << 22);
-    defer testing.allocator.free(data_section);
-
-    var scratch_arena = ArenaAllocator.init(testing.allocator);
-    defer scratch_arena.deinit();
-
-    var header_arena = ArenaAllocator.init(testing.allocator);
-    defer header_arena.deinit();
-
-    const sch = schema.DatasetSchema{
-        .table_names = table_names,
-        .dicts = dicts,
-        .tables = &table_schemas,
-    };
-
-    try sch.validate();
-    try testing.expect(sch.check(&tables));
-
-    const chunk_data = try chunk.Chunk.from_arrow(&sch, &tables, header_arena.allocator(), scratch_arena.allocator());
-
-    const head = try write(.{
-        .data_section = data_section,
-        .compression = .{ .lz4_hc = 9 },
-        .page_size_kb = 1 << 20,
-        .header_alloc = header_arena.allocator(),
-        .filter_alloc = header_arena.allocator(),
-        .scratch_alloc = scratch_arena.allocator(),
-        .chunk = &chunk_data,
-    });
-
-    _ = head;
-}
-
-fn run_test(arrays: []const arr.Array, id: usize) !void {
-    return run_test_impl(arrays, id) catch |e| err: {
-        std.log.err("failed test id: {}", .{id});
-        break :err e;
-    };
-}
-
-test "smoke test write" {
-    var array_arena = ArenaAllocator.init(testing.allocator);
-    defer array_arena.deinit();
-    const array_alloc = array_arena.allocator();
-
-    var len: usize = 0;
-    var arrays: [arrow.test_array.NUM_ARRAYS]arr.Array = undefined;
-
-    for (0..arrow.test_array.NUM_ARRAYS) |idx| {
-        arrays[len] = try arrow.test_array.make_array(@intCast(idx), array_alloc);
-
-        switch (arrays[len]) {
-            .dict, .run_end_encoded, .list_view, .large_list_view, .map => {},
-            else => {
-                len += 1;
-            },
-        }
-    }
-
-    for (0..arrow.test_array.NUM_ARRAYS) |i| {
-        try run_test(arrays[0..len], i);
     }
 }

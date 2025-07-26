@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const deps = Dependencies {
+    const deps = Dependencies{
         .filterz = filterz,
         .zstd = zstd,
         .lz4 = lz4,
