@@ -436,13 +436,19 @@ fn write_fixed_size_binary_array(params: Write, array: *const arr.FixedSizeBinar
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
-    var minmax: ?[]const header.MinMax([]const u8) = null;
+    var minmax: ?[]const ?header.MinMax([]const u8) = null;
     if (has_minmax_index) {
-        const mm = try params.header_alloc.alloc(header.MinMax([]const u8), data.row_index_ends.len);
+        const mm = try params.header_alloc.alloc(?header.MinMax([]const u8), data.row_index_ends.len);
 
         var page_start: u32 = 0;
         for (data.row_index_ends, 0..) |page_end, page_idx| {
             const page_data = arrow.slice.slice_fixed_size_binary(array, page_start, page_end - page_start);
+
+            if (page_data.null_count == page_data.len) {
+                mm[page_idx] = null;
+                continue;
+            }
+
             const min = try copy_str(arrow.minmax.minmax_fixed_size_binary(.min, &page_data) orelse unreachable, params.header_alloc);
             const max = try copy_str(arrow.minmax.minmax_fixed_size_binary(.max, &page_data) orelse unreachable, params.header_alloc);
             mm[page_idx] = .{ .min = min, .max = max };
@@ -561,13 +567,18 @@ fn write_primitive_array(comptime T: type, params: Write, array: *const arr.Prim
     const values = try write_buffer(params, @ptrCast(array.values[array.offset .. array.offset + array.len]), @sizeOf(T), data_section_size);
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
-    var minmax: ?[]const header.MinMax(T) = null;
+    var minmax: ?[]const ?header.MinMax(T) = null;
     if (has_minmax_index) {
-        const mm = try params.header_alloc.alloc(header.MinMax(T), values.row_index_ends.len);
+        const mm = try params.header_alloc.alloc(?header.MinMax(T), values.row_index_ends.len);
 
         var start: u32 = 0;
         for (values.row_index_ends, 0..) |end, page_idx| {
             const page_data = arrow.slice.slice_primitive(T, array, start, end - start);
+
+            if (page_data.null_count == page_data.len) {
+                mm[page_idx] = null;
+                continue;
+            }
 
             const min = arrow.minmax.minmax_primitive(.min, T, &page_data) orelse unreachable;
             const max = arrow.minmax.minmax_primitive(.max, T, &page_data) orelse unreachable;
@@ -600,9 +611,13 @@ fn maybe_align_bitmap(bitmap: []const u8, offset: u32, len: u32, alloc: Allocato
     @memset(x, 0);
 
     var i: u32 = offset;
-    while (i < offset + len) : (i += 1) {
+    var w_i: u32 = 0;
+    while (i < offset + len) : ({
+        i += 1;
+        w_i += 1;
+    }) {
         if (arrow.bitmap.get(bitmap.ptr, i)) {
-            arrow.bitmap.set(x.ptr, i);
+            arrow.bitmap.set(x.ptr, w_i);
         }
     }
 
@@ -747,24 +762,25 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         };
     }
 
-    const data = slice_data: {
-        const start: usize = @intCast(array.offsets[array.offset]);
-        const end: usize = @intCast(array.offsets[array.offset + array.len]);
-        break :slice_data try write_buffer_with_offsets(I, params, @ptrCast(array.data[start..end]), array.offsets[array.offset .. array.offset + array.len], data_section_size);
-    };
+    const data = try write_buffer_with_offsets(I, params, array.data, array.offsets[array.offset .. array.offset + array.len], data_section_size);
 
     const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
     const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0 .. array.len + 1]), @sizeOf(I), data_section_size);
 
     const validity = try write_validity(params, array.offset, array.len, array.null_count, array.validity, data_section_size);
 
-    var minmax: ?[]const header.MinMax([]const u8) = null;
+    var minmax: ?[]const ?header.MinMax([]const u8) = null;
     if (has_minmax_index) {
-        const mm = try params.header_alloc.alloc(header.MinMax([]const u8), offsets.row_index_ends.len);
+        const mm = try params.header_alloc.alloc(?header.MinMax([]const u8), data.row_index_ends.len);
 
         var page_start: u32 = 0;
-        for (offsets.row_index_ends, 0..) |page_end, page_idx| {
+        for (data.row_index_ends, 0..) |page_end, page_idx| {
             const page_data = arrow.slice.slice_binary(index_t, array, page_start, page_end - page_start);
+
+            if (page_data.null_count == page_data.len) {
+                mm[page_idx] = null;
+                continue;
+            }
             const min = try copy_str(arrow.minmax.minmax_binary(.min, index_t, &page_data) orelse unreachable, params.header_alloc);
             const max = try copy_str(arrow.minmax.minmax_binary(.max, index_t, &page_data) orelse unreachable, params.header_alloc);
             mm[page_idx] = .{ .min = min, .max = max };

@@ -117,7 +117,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         const scratch_alloc = scratch_arena.allocator();
 
         break :read try read.read(.{
-            .data_section = data_section,
+            .data_section = data_section[0..header.data_section_size],
             .scratch_alloc = scratch_alloc,
             .schema = chunk.schema,
             .alloc = out_alloc,

@@ -166,7 +166,7 @@ fn read_dict(params: Read, dict_t: DictType, field_header: *const header.DictArr
     values.* = try read_array(params, dict_t.value, field_header.values);
 
     const keys = try params.alloc.create(arr.Array);
-    keys.* = try read_array(params, dict_t.key.to_data_type(), field_header.values);
+    keys.* = try read_array(params, dict_t.key.to_data_type(), field_header.keys);
 
     return arr.DictArray{
         .len = field_header.len,

@@ -77,7 +77,7 @@ pub fn PrimitiveArray(comptime T: type) type {
         values: Buffer,
         validity: ?Buffer,
         len: u32,
-        minmax: ?[]const MinMax(T),
+        minmax: ?[]const ?MinMax(T),
     };
 }
 
@@ -99,7 +99,7 @@ pub const FixedSizeBinaryArray = struct {
     data: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const MinMax([]const u8),
+    minmax: ?[]const ?MinMax([]const u8),
 };
 
 pub const DictArray = struct {
@@ -120,7 +120,7 @@ pub const BinaryArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const MinMax([]const u8),
+    minmax: ?[]const ?MinMax([]const u8),
 };
 
 pub const StructArray = struct {
