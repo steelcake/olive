@@ -49,8 +49,18 @@ pub fn read(params: Read) Error!chunk.Chunk {
     };
 }
 
+fn fh_c_type(comptime field_name: []const u8) type {
+    for (@typeInfo(header.Array).@"union".fields) |field| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            return field.type;
+        }
+    }
+
+    unreachable;
+}
+
 // get named field of header.Array but return error if content is unexpected
-fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Error!*const @TypeOf(@field(header.Array, field_name)) {
+fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Error!*const fh_c_type(field_name) {
     if (@intFromEnum(field_header.*) == @intFromEnum(@field(header.Array, field_name))) {
         return &@field(field_header.*, field_name);
     } else {
@@ -61,7 +71,7 @@ fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Erro
 fn read_array(params: Read, field_type: DataType, field_header: *const header.Array) Error!arr.Array {
     return switch (field_type) {
         .null => .{ .null = try read_null_array(field_header) },
-        .i8 => .{ .i8 = try read_primitive(i8, params, &fh_c("i8", field_header)) },
+        .i8 => .{ .i8 = try read_primitive(i8, params, try fh_c("i8", field_header)) },
         .i16 => .{ .i16 = try read_primitive(i16, params, &field_header.i16) },
         .i32 => .{ .i32 = try read_primitive(i32, params, &field_header.i32) },
         .i64 => .{ .i64 = try read_primitive(i64, params, &field_header.i64) },
@@ -87,7 +97,7 @@ fn read_array(params: Read, field_type: DataType, field_header: *const header.Ar
         .interval_year_month => .{ .interval_year_month = try read_interval(.year_month, params, &field_header.interval_year_month) },
         .interval_day_time => .{ .interval_day_time = try read_interval(.day_time, params, &field_header.interval_day_time) },
         .interval_month_day_nano => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, &field_header.interval_month_day_nano) },
-        .list => .{ .list = try read_list(.i32, params, &field_header.list) },
+        .list => |inner_t| .{ .list = try read_list(.i32, params, inner_t.*, &field_header.list) },
         else => unreachable,
     };
 }
@@ -105,7 +115,7 @@ fn read_list(comptime index_t: arr.IndexType, params: Read, inner_type: DataType
     const len = field_header.len;
 
     const inner = try params.alloc.create(arr.Array);
-    inner.* = try read(params, inner_type, field_header.inner);
+    inner.* = try read_array(params, inner_type, field_header.inner);
     const offsets = try read_buffer(I, params, field_header.offsets);
 
     const validity = try read_validity(params, field_header.validity);
@@ -224,13 +234,14 @@ fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]co
     const len = total_size / @sizeOf(T);
 
     const out = try params.alloc.alloc(T, len);
+    const out_raw: []u8 = @ptrCast(out);
 
     var out_offset: u32 = 0;
     for (buffer.pages) |page| {
         if (params.data_section.len < page.offset + page.compressed_size) {
             return Error.DataSectionTooSmall;
         }
-        try compression.decompress(params.data_section[page.offset .. page.offset + page.compressed_size], out[out_offset .. out_offset + page.uncompressed_size], buffer.compression);
+        try compression.decompress(params.data_section[page.offset .. page.offset + page.compressed_size], out_raw[out_offset .. out_offset + page.uncompressed_size], buffer.compression);
         out_offset += page.uncompressed_size;
     }
 
