@@ -1,6 +1,12 @@
 const arrow = @import("arrow");
 const arr = arrow.array;
 const DataType = arrow.data_type.DataType;
+const StructType = arrow.data_type.StructType;
+const UnionType = arrow.data_type.UnionType;
+const FixedSizeListType = arrow.data_type.FixedSizeListType;
+const RunEndEncodedType = arrow.data_type.RunEndEncodedType;
+const MapType = arrow.data_type.MapType;
+const DictType = arrow.data_type.DictType;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -15,6 +21,8 @@ const Error = error{
     DataSectionTooSmall,
     DecompressFail,
     UnexpectedArrayType,
+    LengthMismatch,
+    BufferTooBig,
 };
 
 pub const Read = struct {
@@ -70,7 +78,7 @@ fn fh_c(comptime field_name: []const u8, field_header: *const header.Array) Erro
 
 fn read_array(params: Read, field_type: DataType, field_header: *const header.Array) Error!arr.Array {
     return switch (field_type) {
-        .null => .{ .null = try read_null_array(field_header) },
+        .null => .{ .null = .{ .len = (try fh_c("null", field_header)).len } },
         .i8 => .{ .i8 = try read_primitive(i8, params, try fh_c("i8", field_header)) },
         .i16 => .{ .i16 = try read_primitive(i16, params, try fh_c("i16", field_header)) },
         .i32 => .{ .i32 = try read_primitive(i32, params, try fh_c("i32", field_header)) },
@@ -98,14 +106,305 @@ fn read_array(params: Read, field_type: DataType, field_header: *const header.Ar
         .interval_day_time => .{ .interval_day_time = try read_interval(.day_time, params, try fh_c("interval_day_time", field_header)) },
         .interval_month_day_nano => .{ .interval_month_day_nano = try read_interval(.month_day_nano, params, try fh_c("interval_month_day_nano", field_header)) },
         .list => |inner_t| .{ .list = try read_list(.i32, params, inner_t.*, try fh_c("list", field_header)) },
-        else => unreachable,
+        .struct_ => |struct_t| .{ .struct_ = try read_struct(params, struct_t.*, try fh_c("struct_", field_header)) },
+        .dense_union => |union_t| .{ .dense_union = try read_dense_union(params, union_t.*, try fh_c("dense_union", field_header)) },
+        .sparse_union => |union_t| .{ .sparse_union = try read_sparse_union(params, union_t.*, try fh_c("sparse_union", field_header)) },
+        .fixed_size_binary => |byte_width| .{ .fixed_size_binary = try read_fixed_size_binary(params, byte_width, try fh_c("fixed_size_binary", field_header)) },
+        .fixed_size_list => |fsl_t| .{ .fixed_size_list = try read_fixed_size_list(params, fsl_t.*, try fh_c("fixed_size_list", field_header)) },
+        .map => |map_t| .{ .map = try read_map(params, map_t.*, try fh_c("map", field_header)) },
+        .duration => |unit| .{ .duration = .{ .unit = unit, .inner = try read_primitive(i64, params, try fh_c("i64", field_header)) } },
+        .large_binary => .{ .binary = try read_binary(.i64, params, try fh_c("binary", field_header)) },
+        .large_utf8 => .{ .utf8 = .{ .inner = try read_binary(.i64, params, try fh_c("binary", field_header)) } },
+        .large_list => |inner_t| .{ .list = try read_list(.i64, params, inner_t.*, try fh_c("list", field_header)) },
+        .run_end_encoded => |ree_t| .{ .run_end_encoded = try read_run_end_encoded(params, ree_t.*, try fh_c("run_end_encoded", field_header)) },
+        .binary_view => .{ .binary_view = try read_binary_view(params, try fh_c("binary", field_header)) },
+        .utf8_view => .{ .utf8_view = .{ .inner = try read_binary_view(params, try fh_c("binary", field_header)) } },
+        .list_view => .{ .list_view = try read_list_view(.i32, params, try fh_c("list", field_header)) },
+        .large_list_view => .{ .large_list_view = try read_list_view(.i64, params, try fh_c("list", field_header)) },
+        .dict => |dict_t| .{ .dict = try read_dict(params, dict_t.*, try fh_c("dict", field_header)) },
     };
 }
 
-fn read_null_array(field_header: *const header.Array) Error!arr.NullArray {
-    return switch (field_header.*) {
-        .null => |*fh| .{ .len = fh.len },
-        else => Error.UnexpectedArrayType,
+fn read_dict(params: Read, dict_t: DictType, field_header: *const header.DictArray) Error!arr.DictArray {
+    const values = try params.alloc.create(arr.Array);
+    values.* = try read_array(params, dict_t.value, field_header.values);
+
+    const keys = try params.alloc.create(arr.Array);
+    keys.* = try read_array(params, dict_t.key.to_data_type(), field_header.values);
+
+    return arr.DictArray{
+        .len = field_header.len,
+        .offset = 0,
+        .is_ordered = field_header.is_ordered,
+        .values = values,
+        .keys = keys,
+    };
+}
+
+fn read_list_view(comptime index_t: arr.IndexType, params: Read, field_header: *const header.ListArray) Error!arr.GenericListViewArray(index_t) {
+    const array = try read_list(index_t, params, field_header);
+
+    // validate to avoid unsafety when handling the array
+    try arrow.validate.validate_binary(&array);
+
+    var builder = arrow.builder.GenericListViewBuilder(index_t).with_capacity(array.len, array.null_count > 0, params.scratch_alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            if (arrow.bitmap.get(validity, idx)) {
+                const start = array.offsets.ptr[idx];
+                const end = array.offsets.ptr[idx + 1];
+                const len = end - start;
+                builder.append_item(len) catch unreachable;
+            } else {
+                builder.append_null() catch unreachable;
+            }
+        }
+    } else {
+        var idx: u32 = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            const start = array.offsets.ptr[idx];
+            const end = array.offsets.ptr[idx + 1];
+            const len = end - start;
+            builder.append_item(len) catch unreachable;
+        }
+    }
+
+    return builder.finish(array.inner) catch unreachable;
+}
+
+fn read_binary_view(params: Read, field_header: *const header.BinaryArray) Error!arr.BinaryViewArray {
+    const array = try read_binary(.i64, Read{
+        .schema = params.schema,
+        .alloc = params.scratch_alloc,
+        .scratch_alloc = params.scratch_alloc,
+        .data_section = params.data_section,
+        .header = params.header,
+    }, field_header);
+
+    // validate to avoid unsafety when handling the array
+    try arrow.validate.validate_binary(&array);
+
+    if (array.data.len > std.math.maxInt(u32)) {
+        return Error.BufferTooBig;
+    }
+
+    var buffer_len: u64 = 0;
+    var idx: u32 = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        const start = array.offsets.ptr[idx];
+        const end = array.offsets.ptr[idx + 1];
+        const len: u64 = @as(u64, @bitCast(end -% start));
+
+        if (len > 12) {
+            buffer_len +%= len;
+        }
+    }
+
+    var builder = arrow.builder.BinaryViewBuilder.with_capacity(@intCast(buffer_len), array.len, array.null_count > 0, params.alloc) catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    };
+
+    if (array.null_count > 0) {
+        const validity = (array.validity orelse unreachable).ptr;
+
+        idx = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            builder.append_option(arrow.get.get_binary_opt(array.data.ptr, array.offsets.ptr, validity, idx)) catch unreachable;
+        }
+    } else {
+        idx = array.offset;
+        while (idx < array.offset + array.len) : (idx += 1) {
+            builder.append_value(arrow.get.get_binary(array.data.ptr, array.offsets.ptr, idx)) catch unreachable;
+        }
+    }
+
+    return (builder.finish() catch unreachable);
+}
+
+fn read_run_end_encoded(params: Read, ree_t: RunEndEncodedType, field_header: *const header.RunEndArray) Error!arr.RunEndArray {
+    const values = try params.alloc.create(arr.Array);
+    values.* = try read_array(params, ree_t.value, field_header.values);
+
+    const run_ends = try params.alloc.create(arr.Array);
+    run_ends.* = try read_array(params, ree_t.run_end.to_data_type(), field_header.run_ends);
+
+    return arr.RunEndArray{
+        .offset = 0,
+        .len = field_header.len,
+        .values = values,
+        .run_ends = run_ends,
+    };
+}
+
+fn read_map(params: Read, map_type: MapType, field_header: *const header.MapArray) Error!arr.MapArray {
+    const len = field_header.len;
+
+    const offsets = try read_buffer(i32, params, field_header.offsets);
+
+    const validity = try read_validity(params, field_header.validity);
+
+    const null_count = if (validity) |v|
+        arrow.bitmap.count_nulls(v, 0, len)
+    else
+        0;
+
+    const entries = try params.alloc.create(arr.StructArray);
+
+    const field_types = try params.alloc.alloc(DataType, 2);
+    field_types[0] = map_type.key.to_data_type();
+    field_types[1] = map_type.value;
+
+    const entries_t = StructType{
+        .field_names = &.{ "keys", "values" },
+        .field_types = field_types,
+    };
+    entries.* = try read_struct(params, entries_t, field_header.entries);
+
+    return arr.MapArray{
+        .len = len,
+        .offset = 0,
+        .offsets = offsets,
+        .validity = validity,
+        .null_count = null_count,
+        .entries = entries,
+        .keys_are_sorted = field_header.keys_are_sorted,
+    };
+}
+
+fn read_fixed_size_list(params: Read, fsl_type: FixedSizeListType, field_header: *const header.FixedSizeListArray) Error!arr.FixedSizeListArray {
+    const len = field_header.len;
+
+    const inner = try params.alloc.create(arr.Array);
+    inner.* = try read_array(params, fsl_type.inner, field_header.inner);
+
+    const validity = try read_validity(params, field_header.validity);
+
+    const null_count = if (validity) |v|
+        arrow.bitmap.count_nulls(v, 0, len)
+    else
+        0;
+
+    return arr.FixedSizeListArray{
+        .len = len,
+        .offset = 0,
+        .validity = validity,
+        .null_count = null_count,
+        .item_width = fsl_type.item_width,
+        .inner = inner,
+    };
+}
+
+fn read_fixed_size_binary(params: Read, byte_width: i32, field_header: *const header.FixedSizeBinaryArray) Error!arr.FixedSizeBinaryArray {
+    const len = field_header.len;
+
+    const data = try read_buffer(u8, params, field_header.data);
+
+    const validity = try read_validity(params, field_header.validity);
+
+    const null_count = if (validity) |v|
+        arrow.bitmap.count_nulls(v, 0, len)
+    else
+        0;
+
+    return arr.FixedSizeBinaryArray{
+        .len = len,
+        .offset = 0,
+        .validity = validity,
+        .null_count = null_count,
+        .byte_width = byte_width,
+        .data = data,
+    };
+}
+
+fn read_dense_union(params: Read, union_type: UnionType, field_header: *const header.DenseUnionArray) Error!arr.DenseUnionArray {
+    const len = field_header.inner.len;
+
+    if (field_header.inner.children.len != union_type.field_types.len) {
+        return Error.LengthMismatch;
+    }
+
+    const children = try params.alloc.alloc(arr.Array, field_header.inner.children.len);
+    for (field_header.inner.children, union_type.field_types, 0..) |*child_header, child_type, child_idx| {
+        children[child_idx] = try read_array(params, child_type, child_header);
+    }
+
+    const type_ids = try read_buffer(i8, params, field_header.inner.type_ids);
+    const offsets = try read_buffer(i32, params, field_header.offsets);
+
+    if (type_ids.len != len or offsets.len != len) {
+        return Error.LengthMismatch;
+    }
+
+    return arr.DenseUnionArray{
+        .inner = .{
+            .offset = 0,
+            .len = len,
+            .field_names = union_type.field_names,
+            .children = children,
+            .type_ids = type_ids,
+            .type_id_set = union_type.type_id_set,
+        },
+        .offsets = offsets,
+    };
+}
+
+fn read_sparse_union(params: Read, union_type: UnionType, field_header: *const header.SparseUnionArray) Error!arr.SparseUnionArray {
+    const len = field_header.inner.len;
+
+    if (field_header.inner.children.len != union_type.field_types.len) {
+        return Error.LengthMismatch;
+    }
+
+    const children = try params.alloc.alloc(arr.Array, field_header.inner.children.len);
+    for (field_header.inner.children, union_type.field_types, 0..) |*child_header, child_type, child_idx| {
+        children[child_idx] = try read_array(params, child_type, child_header);
+    }
+
+    const type_ids = try read_buffer(i8, params, field_header.inner.type_ids);
+    if (type_ids.len != len) {
+        return Error.LengthMismatch;
+    }
+
+    return arr.SparseUnionArray{
+        .inner = .{
+            .offset = 0,
+            .len = len,
+            .field_names = union_type.field_names,
+            .children = children,
+            .type_ids = type_ids,
+            .type_id_set = union_type.type_id_set,
+        },
+    };
+}
+
+fn read_struct(params: Read, struct_type: StructType, field_header: *const header.StructArray) Error!arr.StructArray {
+    const len = field_header.len;
+
+    const field_values = try params.alloc.alloc(arr.Array, struct_type.field_types.len);
+    for (struct_type.field_types, field_header.field_values, 0..) |field_type, *field_h, field_idx| {
+        field_values[field_idx] = try read_array(params, field_type, field_h);
+    }
+
+    const validity = try read_validity(params, field_header.validity);
+
+    const null_count = if (validity) |v|
+        arrow.bitmap.count_nulls(v, 0, len)
+    else
+        0;
+
+    return arr.StructArray{
+        .field_names = struct_type.field_names,
+        .validity = validity,
+        .null_count = null_count,
+        .len = len,
+        .offset = 0,
+        .field_values = field_values,
     };
 }
 
