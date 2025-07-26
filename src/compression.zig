@@ -73,19 +73,14 @@ pub fn compress(src: []const u8, dst: []u8, algo: Compression) CompressError!usi
 
 fn zstd_decompress(src: []const u8, dst: []u8) DecompressError!void {
     const res = zstd.ZSTD_decompress(dst.ptr, dst.len, src.ptr, src.len);
-    if (zstd.ZSTD_isError(res) == 0) {
-        std.debug.assert(res == dst.len);
-    } else {
+    if (zstd.ZSTD_isError(res) != 0 or res != dst.len) {
         return DecompressError.DecompressFail;
     }
 }
 
 fn lz4_decompress(src: []const u8, dst: []u8) DecompressError!void {
     const res = lz4.LZ4_decompress_safe(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len));
-    if (res >= 0) {
-        const decomp_len: usize = @intCast(res);
-        std.debug.assert(decomp_len == dst.len);
-    } else {
+    if (res < 0 or @as(usize, @intCast(res)) != dst.len) {
         return DecompressError.DecompressFail;
     }
 }
