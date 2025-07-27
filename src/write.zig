@@ -43,7 +43,7 @@ pub fn write(params: Write) Error!header.Header {
 
     var data_section_size: u32 = 0;
 
-    const dicts = try params.header_alloc.alloc(?header.Dict, params.chunk.dicts.len);
+    const dicts = try params.header_alloc.alloc(header.Dict, params.chunk.dicts.len);
 
     for (params.chunk.dicts, sch.dicts, 0..) |*dict, dict_schema, dict_idx| {
         const dict_array = try write_fixed_size_binary_array(params, dict, &data_section_size, true);
@@ -64,7 +64,10 @@ pub fn write(params: Write) Error!header.Header {
                 .filter = filter,
             };
         } else {
-            dicts[dict_idx] = null;
+            dicts[dict_idx] = header.Dict{
+                .data = dict_array,
+                .filter = null,
+            };
         }
     }
 
@@ -763,16 +766,6 @@ fn write_buffer(params: Write, buffer: []const u8, elem_size: u8, data_section_s
 
 fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *const arr.GenericBinaryArray(index_t), data_section_size: *u32, has_minmax_index: bool) Error!header.BinaryArray {
     const I = index_t.to_type();
-
-    if (array.len == 0) {
-        return .{
-            .data = empty_buffer(),
-            .offsets = empty_buffer(),
-            .validity = null,
-            .len = 0,
-            .minmax = null,
-        };
-    }
 
     const data = try write_buffer_with_offsets(I, params, array.data, array.offsets[array.offset .. array.offset + array.len + 1], data_section_size);
 

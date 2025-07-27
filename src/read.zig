@@ -15,6 +15,7 @@ const schema = @import("./schema.zig");
 const compression = @import("./compression.zig");
 const Compression = compression.Compression;
 const chunk = @import("./chunk.zig");
+const dict_impl = @import("./dict.zig");
 
 const Error = error{
     OutOfMemory,
@@ -42,13 +43,18 @@ pub fn read(params: Read) Error!chunk.Chunk {
         const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 
         for (table_schema.data_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
-            fields[field_idx] = try read_array(params, field_type, field_header);
+            const dt = if (dict_impl.find_dict_idx(params.schema.dicts, table_idx, field_idx) == null) field_type else DataType{ .u32 = {} };
+            fields[field_idx] = try read_array(params, dt, field_header);
         }
 
         tables[table_idx] = .{
             .fields = fields,
             .num_rows = table_header.num_rows,
         };
+    }
+
+    for (params.schema.dicts, params.header.dicts, 0..) |dict_schema, dict_header, dict_idx| {
+        dicts[dict_idx] = try read_fixed_size_binary(params, dict_schema.byte_width, &dict_header.data);
     }
 
     return .{

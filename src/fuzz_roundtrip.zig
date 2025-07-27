@@ -15,22 +15,94 @@ const read = @import("./read.zig");
 const schema_mod = @import("./schema.zig");
 const DatasetSchema = schema_mod.DatasetSchema;
 const TableSchema = schema_mod.TableSchema;
+const dict_impl = @import("./dict.zig");
+
+fn make_dicted_array(input: *FuzzInput, len: u32, dict_array: *const arr.FixedSizeBinaryArray, alloc: Allocator) !arr.Array {
+    const keys = make_keys: {
+        const keys_raw = try input.primitive_array(u32, len, alloc);
+
+        const keys = try alloc.alloc(u32, keys_raw.offset + keys_raw.len);
+
+        var idx: u32 = 0;
+        while (idx < keys_raw.offset + keys_raw.len) : (idx += 1) {
+            keys.ptr[idx] = keys_raw.values.ptr[idx] % dict_array.len;
+        }
+
+        break :make_keys arr.UInt32Array{
+            .values = keys,
+            .validity = keys_raw.validity,
+            .offset = keys_raw.offset,
+            .len = keys_raw.len,
+            .null_count = keys_raw.null_count,
+        };
+    };
+
+    const dt: data_type.DataType = switch ((try input.int(u8)) % 7) {
+        0 => .{ .binary = {} },
+        1 => .{ .large_binary = {} },
+        2 => .{ .binary_view = {} },
+        3 => .{ .fixed_size_binary = dict_array.byte_width },
+        4 => .{ .utf8 = {} },
+        5 => .{ .large_utf8 = {} },
+        6 => .{ .utf8_view = {} },
+        else => unreachable,
+    };
+
+    return try dict_impl.unpack_dict(dict_array, &keys, dt, alloc);
+}
 
 fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
-    const num_tables = (try input.int(u8)) % 10;
+    const num_tables = (try input.int(u8)) % 10 + 1;
+    const num_dicts = (try input.int(u8)) % 4;
 
     var chunk_arena = ArenaAllocator.init(alloc);
     defer chunk_arena.deinit();
     const chunk_alloc = chunk_arena.allocator();
 
-    const tables = try chunk_alloc.alloc([]const arr.Array, num_tables);
+    const dicts = try chunk_alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
+    for (0..num_dicts) |dict_idx| {
+        dicts[dict_idx] = try input.fixed_size_binary_array(try input.int(u8), chunk_alloc);
+    }
+
+    const table_num_fields = try chunk_alloc.alloc(u8, num_tables);
     for (0..num_tables) |table_idx| {
-        const num_fields = (try input.int(u8)) % 10;
+        table_num_fields[table_idx] = (try input.int(u8)) % 12 + 1;
+    }
+
+    const tables = try chunk_alloc.alloc([]const arr.Array, num_tables);
+    const dict_schemas = try chunk_alloc.alloc(schema_mod.DictSchema, num_dicts);
+    for (0..num_dicts) |dict_idx| {
+        const num_members = (try input.int(u8)) % 10;
+        const members = try chunk_alloc.alloc(schema_mod.DictMember, num_members);
+
+        const table_index = (try input.int(u8)) % num_tables;
+        const field_index = (try input.int(u8)) % table_num_fields[table_index];
+
+        for (0..num_members) |member_idx| {
+            members[member_idx] = schema_mod.DictMember{
+                .table_index = table_index,
+                .field_index = field_index,
+            };
+        }
+
+        dict_schemas[dict_idx] = schema_mod.DictSchema{
+            .members = members,
+            .has_filter = true,
+            .byte_width = dicts[dict_idx].byte_width,
+        };
+    }
+
+    for (0..num_tables) |table_idx| {
+        const num_fields = table_num_fields[table_idx];
         const num_rows = try input.int(u8);
 
         const fields = try chunk_alloc.alloc(arr.Array, num_fields);
         for (0..num_fields) |field_idx| {
-            fields[field_idx] = try input.make_array(num_rows, chunk_alloc);
+            if (dict_impl.find_dict_idx(dict_schemas, table_idx, field_idx)) |dict_idx| {
+                fields[field_idx] = try make_dicted_array(input, num_rows, &dicts[dict_idx], chunk_alloc);
+            } else {
+                fields[field_idx] = try input.make_array(num_rows, chunk_alloc);
+            }
         }
 
         tables[table_idx] = fields;
@@ -68,7 +140,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     const schema = DatasetSchema{
         .tables = table_schemas,
         .table_names = table_names,
-        .dicts = &.{},
+        .dicts = dict_schemas,
     };
 
     const chunk = make_chunk: {

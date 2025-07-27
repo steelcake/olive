@@ -223,7 +223,7 @@ pub const Dict = struct {
 
 pub const Header = struct {
     tables: []const Table,
-    dicts: []const ?Dict,
+    dicts: []const Dict,
     data_section_size: u32,
 };
 
