@@ -774,7 +774,7 @@ fn write_binary_array(comptime index_t: arr.IndexType, params: Write, array: *co
         };
     }
 
-    const data = try write_buffer_with_offsets(I, params, array.data, array.offsets[array.offset .. array.offset + array.len], data_section_size);
+    const data = try write_buffer_with_offsets(I, params, array.data, array.offsets[array.offset .. array.offset + array.len + 1], data_section_size);
 
     const normalized_offsets = try normalize_offsets(index_t.to_type(), array.offsets[array.offset .. array.offset + array.len + 1], params.scratch_alloc);
     const offsets = try write_buffer(params, @ptrCast(normalized_offsets[0 .. array.len + 1]), @sizeOf(I), data_section_size);
