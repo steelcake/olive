@@ -35,7 +35,7 @@ fn unpack_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinary
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -44,7 +44,7 @@ fn unpack_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinary
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
         }
     }
 
@@ -69,7 +69,7 @@ fn unpack_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray,
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -78,7 +78,7 @@ fn unpack_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray,
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
         }
     }
 
@@ -98,7 +98,7 @@ fn unpack_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *con
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -107,7 +107,7 @@ fn unpack_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *con
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key)) catch unreachable;
+            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
         }
     }
 
@@ -229,7 +229,7 @@ fn find_dict_elem_idx(dict_array: *const arr.FixedSizeBinaryArray, val: []const 
         const dict_elem = arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, idx);
 
         if (std.mem.eql(u8, val, dict_elem)) {
-            return idx;
+            return idx - dict_array.offset;
         }
     }
 

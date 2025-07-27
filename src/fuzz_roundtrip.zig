@@ -69,7 +69,6 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         table_num_fields[table_idx] = (try input.int(u8)) % 12 + 1;
     }
 
-    const tables = try chunk_alloc.alloc([]const arr.Array, num_tables);
     const dict_schemas = try chunk_alloc.alloc(schema_mod.DictSchema, num_dicts);
     for (0..num_dicts) |dict_idx| {
         const num_members = (try input.int(u8)) % 10;
@@ -91,6 +90,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         };
     }
 
+    const tables = try chunk_alloc.alloc([]const arr.Array, num_tables);
     for (0..num_tables) |table_idx| {
         const num_fields = table_num_fields[table_idx];
         const num_rows = try input.int(u8);
