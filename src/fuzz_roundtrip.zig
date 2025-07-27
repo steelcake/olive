@@ -133,6 +133,17 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
             arrow.equals.equals(out_field, chunk_field);
         }
     }
+
+    const out_tables = try out_chunk.to_arrow(out_alloc);
+
+    std.debug.assert(out_tables.len == tables.len);
+    for (out_tables, tables) |out_table, table| {
+        std.debug.assert(out_table.len == table.len);
+
+        for (out_table, table) |*out_field, *field| {
+            arrow.equals.equals(out_field, field);
+        }
+    }
 }
 
 fn to_fuzz(data: []const u8) !void {

@@ -24,6 +24,26 @@ pub const Chunk = struct {
     dicts: []const arr.FixedSizeBinaryArray,
     schema: *const schema_impl.DatasetSchema,
 
+    pub fn to_arrow(self: *const Chunk, alloc: Allocator) Error![]const []const arr.Array {
+        const out = try alloc.alloc([]const arr.Array, self.tables.len);
+
+        for (self.tables, 0..) |table, table_idx| {
+            const fields = try alloc.alloc(arr.Array, table.fields.len);
+
+            for (table.fields, 0..) |*field, field_idx| {
+                if (dict_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
+                    fields[field_idx] = try dict_impl.unpack_dict(&self.dicts[dict_idx], &field.u32, self.schema.tables[table_idx].data_types[field_idx], alloc);
+                } else {
+                    fields[field_idx] = field.*;
+                }
+            }
+
+            out[table_idx] = fields;
+        }
+
+        return out;
+    }
+
     pub fn from_arrow(schema: *const DatasetSchema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
         const out = try alloc.alloc(Table, tables.len);
 
