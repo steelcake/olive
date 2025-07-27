@@ -354,10 +354,11 @@ fn write_dense_union_array(params: Write, array: *const arr.DenseUnionArray, dat
                 break header.MinMax(i32){ .min = offset, .max = offset };
             }
         } else {
+            sliced_children[child_idx] = arrow.slice.slice(child, 0, 0);
             continue;
         };
 
-        for (input_offsets[1..], tids[1..]) |offset, tid| {
+        for (input_offsets, tids) |offset, tid| {
             if (child_tid == tid) {
                 mm = .{
                     .min = @min(mm.min, offset),
