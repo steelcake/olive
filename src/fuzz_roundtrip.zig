@@ -61,7 +61,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
     const dicts = try chunk_alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
     for (0..num_dicts) |dict_idx| {
-        dicts[dict_idx] = try input.fixed_size_binary_array(try input.int(u8), chunk_alloc);
+        dicts[dict_idx] = try input.fixed_size_binary_array((try input.int(u8)) % 100 + 1, chunk_alloc);
     }
 
     const table_num_fields = try chunk_alloc.alloc(u8, num_tables);
@@ -75,10 +75,9 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         const num_members = (try input.int(u8)) % 10;
         const members = try chunk_alloc.alloc(schema_mod.DictMember, num_members);
 
-        const table_index = (try input.int(u8)) % num_tables;
-        const field_index = (try input.int(u8)) % table_num_fields[table_index];
-
         for (0..num_members) |member_idx| {
+            const table_index = (try input.int(u8)) % num_tables;
+            const field_index = (try input.int(u8)) % table_num_fields[table_index];
             members[member_idx] = schema_mod.DictMember{
                 .table_index = table_index,
                 .field_index = field_index,
