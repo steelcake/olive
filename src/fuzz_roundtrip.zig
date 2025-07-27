@@ -86,7 +86,8 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     defer filter_arena.deinit();
     const filter_alloc = filter_arena.allocator();
 
-    const page_size_kb = (try input.int(u32)) % (1 << 24) + 1;
+    // max should be 16 MB since the number is in KB and min should be 1 KB
+    const page_size_kb = (try input.int(u32)) % (1 << 14) + 1;
 
     const data_section = try alloc.alloc(u8, 1 << 28);
     defer alloc.free(data_section);
