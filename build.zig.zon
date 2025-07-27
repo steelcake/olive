@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.0-dev.822+dd75e7bcb",
     .dependencies = .{
         .filterz = .{
-            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.5.tar.gz",
-            .hash = "filterz-0.0.5-n5a115K7AACyNs9bXxj4dVNks04b6EmbeNI4J5d2zIKE",
+            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.6.tar.gz",
+            .hash = "filterz-0.0.6-n5a112nBAAAASzlT8xzMu_LGGNndLMLhgoHQS2MlcRcN",
         },
         .zstd = .{
             .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
