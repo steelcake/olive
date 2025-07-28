@@ -39,6 +39,14 @@ pub const TableSchema = struct {
     has_minmax_index: []const bool,
 
     pub fn validate(self: *const TableSchema) Error!void {
+        for (self.field_names, 0..) |name, idx| {
+            for (self.field_names[0..idx]) |other_name| {
+                if (std.mem.eql(u8, name, other_name)) {
+                    return Error.Invalid;
+                }
+            }
+        }
+
         if (self.field_names.len != self.data_types.len) {
             return Error.Invalid;
         }
@@ -90,6 +98,14 @@ pub const DatasetSchema = struct {
 
     /// Validate this schema for any inconsistencies
     pub fn validate(self: *const DatasetSchema) Error!void {
+        for (self.table_names, 0..) |name, idx| {
+            for (self.table_names[0..idx]) |other_name| {
+                if (std.mem.eql(u8, name, other_name)) {
+                    return Error.Invalid;
+                }
+            }
+        }
+
         if (self.table_names.len != self.tables.len) {
             return Error.Invalid;
         }
