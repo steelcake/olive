@@ -32,6 +32,20 @@ pub fn can_be_dict_member(data_type: DataType) bool {
 
 const Error = error{Invalid};
 
+fn validate_names(names: []const []const u8) Error!void {
+    for (names, 0..) |name, field_idx| {
+        if (name.len == 0) {
+            return Error.Invalid;
+        }
+
+        for (names[0..field_idx]) |other_name| {
+            if (std.mem.eql(u8, name, other_name)) {
+                return Error.Invalid;
+            }
+        }
+    }
+}
+
 pub const TableSchema = struct {
     field_names: []const [:0]const u8,
     data_types: []const DataType,
@@ -39,13 +53,7 @@ pub const TableSchema = struct {
     has_minmax_index: []const bool,
 
     pub fn validate(self: *const TableSchema) Error!void {
-        for (self.field_names, 0..) |name, idx| {
-            for (self.field_names[0..idx]) |other_name| {
-                if (std.mem.eql(u8, name, other_name)) {
-                    return Error.Invalid;
-                }
-            }
-        }
+        try validate_names(self.field_names);
 
         if (self.field_names.len != self.data_types.len) {
             return Error.Invalid;
@@ -98,13 +106,7 @@ pub const DatasetSchema = struct {
 
     /// Validate this schema for any inconsistencies
     pub fn validate(self: *const DatasetSchema) Error!void {
-        for (self.table_names, 0..) |name, idx| {
-            for (self.table_names[0..idx]) |other_name| {
-                if (std.mem.eql(u8, name, other_name)) {
-                    return Error.Invalid;
-                }
-            }
-        }
+        try validate_names(self.table_names);
 
         if (self.table_names.len != self.tables.len) {
             return Error.Invalid;

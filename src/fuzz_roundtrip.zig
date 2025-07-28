@@ -280,7 +280,7 @@ fn rand_bytes_zero_sentinel(rand: std.Random, out: []u8) void {
 }
 
 fn make_name(existing_names: []const []const u8, rand: std.Random, alloc: Allocator) ![:0]const u8 {
-    const name_len = rand.int(u8) % 30;
+    const name_len = rand.int(u8) % 30 + 1;
     const name = try alloc.allocSentinel(u8, name_len, 0);
 
     namegen: while (true) {
