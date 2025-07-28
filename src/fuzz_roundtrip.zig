@@ -144,10 +144,12 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
             data_types[field_idx] = dt;
             has_minmax_index[field_idx] = schema_mod.can_have_minmax_index(dt) and (try input.boolean());
-            field_names[field_idx] = try make_name(rand, chunk_alloc);
+
+            field_names[field_idx] = try make_name(field_names[0..field_idx], rand, chunk_alloc);
         }
 
-        table_names[table_idx] = try make_name(rand, chunk_alloc);
+        table_names[table_idx] = try make_name(table_names[0..table_idx], rand, chunk_alloc);
+
         table_schemas[table_idx] = TableSchema{
             .has_minmax_index = has_minmax_index,
             .data_types = data_types,
@@ -277,9 +279,20 @@ fn rand_bytes_zero_sentinel(rand: std.Random, out: []u8) void {
     }
 }
 
-fn make_name(rand: std.Random, alloc: Allocator) ![:0]const u8 {
+fn make_name(existing_names: []const []const u8, rand: std.Random, alloc: Allocator) ![:0]const u8 {
     const name_len = rand.int(u8) % 30;
     const name = try alloc.allocSentinel(u8, name_len, 0);
-    rand_bytes_zero_sentinel(rand, name);
+
+    namegen: while (true) {
+        rand_bytes_zero_sentinel(rand, name);
+
+        for (existing_names) |other_name| {
+            if (std.mem.eql(u8, name, other_name)) {
+                continue :namegen;
+            }
+        }
+        break;
+    }
+
     return name;
 }
