@@ -31,7 +31,7 @@ pub const Chunk = struct {
             const fields = try alloc.alloc(arr.Array, table.fields.len);
 
             for (table.fields, 0..) |*field, field_idx| {
-                if (dict_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
+                if (schema_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
                     fields[field_idx] = try dict_impl.unpack_dict(&self.dicts[dict_idx], &field.u32, self.schema.tables[table_idx].data_types[field_idx], alloc);
                 } else {
                     fields[field_idx] = field.*;
@@ -92,7 +92,7 @@ pub const Chunk = struct {
             const fields = try alloc.alloc(arr.Array, table.len);
 
             for (table, 0..) |*array, field_idx| {
-                if (dict_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
+                if (schema_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
                     fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_arrays[dict_idx], array, alloc) };
                 } else {
                     fields[field_idx] = array.*;

@@ -97,7 +97,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
         const fields = try chunk_alloc.alloc(arr.Array, num_fields);
         for (0..num_fields) |field_idx| {
-            if (dict_impl.find_dict_idx(dict_schemas, table_idx, field_idx)) |dict_idx| {
+            if (schema_mod.find_dict_idx(dict_schemas, table_idx, field_idx)) |dict_idx| {
                 fields[field_idx] = try make_dicted_array(input, num_rows, &dicts[dict_idx], chunk_alloc);
             } else {
                 fields[field_idx] = try input.make_array(num_rows, chunk_alloc);
@@ -141,6 +141,9 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         .table_names = table_names,
         .dicts = dict_schemas,
     };
+
+    try schema.validate();
+    try schema.check(tables);
 
     const chunk = make_chunk: {
         var scratch_arena = ArenaAllocator.init(alloc);

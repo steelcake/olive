@@ -43,7 +43,7 @@ pub fn read(params: Read) Error!chunk.Chunk {
         const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 
         for (table_schema.data_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
-            const dt = if (dict_impl.find_dict_idx(params.schema.dicts, table_idx, field_idx) == null) field_type else DataType{ .u32 = {} };
+            const dt = if (schema.find_dict_idx(params.schema.dicts, table_idx, field_idx) == null) field_type else DataType{ .u32 = {} };
             fields[field_idx] = try read_array(params, dt, field_header);
         }
 

@@ -4,8 +4,6 @@ const arrow = @import("arrow");
 const arr = arrow.array;
 const DataType = arrow.data_type.DataType;
 
-const schema = @import("./schema.zig");
-
 const Error = error{
     NonBinaryArrayWithDict,
     OutOfMemory,
@@ -230,19 +228,6 @@ fn find_dict_elem_idx(dict_array: *const arr.FixedSizeBinaryArray, val: []const 
 
         if (std.mem.eql(u8, val, dict_elem)) {
             return idx - dict_array.offset;
-        }
-    }
-
-    return null;
-}
-
-/// Finds the dictionary the corresponds to given field (table_index/field_index)
-pub fn find_dict_idx(dicts: []const schema.DictSchema, table_index: usize, field_index: usize) ?usize {
-    for (dicts, 0..) |dict, dict_idx| {
-        for (dict.members) |member| {
-            if (member.table_index == table_index and member.field_index == field_index) {
-                return dict_idx;
-            }
         }
     }
 
