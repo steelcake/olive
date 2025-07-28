@@ -74,17 +74,36 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         const num_members = (try input.int(u8)) % 10;
         const members = try chunk_alloc.alloc(schema_mod.DictMember, num_members);
 
-        for (0..num_members) |member_idx| {
+        var found_members: usize = 0;
+        membergen: for (0..num_members) |_| {
             const table_index = (try input.int(u8)) % num_tables;
             const field_index = (try input.int(u8)) % table_num_fields[table_index];
-            members[member_idx] = schema_mod.DictMember{
+
+            for (members[0..found_members]) |memb| {
+                if (memb.table_index == table_index and memb.field_index == field_index) {
+                    // this dict already has this member
+                    continue :membergen;
+                }
+            }
+
+            for (dict_schemas[0..dict_idx]) |other_dict| {
+                for (other_dict.members) |memb| {
+                    if (memb.table_index == table_index and memb.field_index == field_index) {
+                        // other dict has this member
+                        continue :membergen;
+                    }
+                }
+            }
+
+            members[found_members] = schema_mod.DictMember{
                 .table_index = table_index,
                 .field_index = field_index,
             };
+            found_members += 1;
         }
 
         dict_schemas[dict_idx] = schema_mod.DictSchema{
-            .members = members,
+            .members = members[0..found_members],
             .has_filter = true,
             .byte_width = dicts[dict_idx].byte_width,
         };
