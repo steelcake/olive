@@ -20,6 +20,10 @@
             .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.18.tar.gz",
             .hash = "arrow-0.0.18-ZFEaqPTVBgDpv6ODj7fGp3lnFWeT7S7kcIby-9rcSDZi",
         },
+        .borsh = .{
+            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.3.tar.gz",
+            .hash = "borsh-0.0.3-vlKk2U94AAB5re-T-ECyVJDbLTKDPq0kBJEMt6PdIcGb",
+        },
     },
     .paths = .{
         "build.zig",
