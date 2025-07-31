@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const borsh = @import("borsh");
+
 const arrow = @import("arrow");
 const validate = arrow.validate.validate;
 const arr = arrow.array;
@@ -16,6 +18,7 @@ const schema_mod = @import("./schema.zig");
 const DatasetSchema = schema_mod.DatasetSchema;
 const TableSchema = schema_mod.TableSchema;
 const dict_impl = @import("./dict.zig");
+const header_mod = @import("./header.zig");
 
 fn make_dicted_array(input: *FuzzInput, len: u32, dict_array: *const arr.FixedSizeBinaryArray, alloc: Allocator) !arr.Array {
     const keys = make_keys: {
@@ -187,7 +190,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     const data_section = try alloc.alloc(u8, 1 << 28);
     defer alloc.free(data_section);
 
-    const header = write: {
+    const input_header = write: {
         var scratch_arena = ArenaAllocator.init(alloc);
         defer scratch_arena.deinit();
         const scratch_alloc = scratch_arena.allocator();
@@ -203,9 +206,16 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         });
     };
 
+    const header_bytes_buf = try alloc.alloc(u8, 1 << 14);
+    defer alloc.free(header_bytes_buf);
+    const header_bytes_len = try borsh.serde.serialize(header_mod.Header, &input_header, header_bytes_buf, 20);
+    const header_bytes = header_bytes_buf[0..header_bytes_len];
+
     var out_arena = ArenaAllocator.init(alloc);
     defer out_arena.deinit();
     const out_alloc = out_arena.allocator();
+
+    const out_header = try borsh.serde.deserialize(header_mod.Header, header_bytes, out_alloc, 20);
 
     const out_chunk = read: {
         var scratch_arena = ArenaAllocator.init(alloc);
@@ -213,11 +223,11 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         const scratch_alloc = scratch_arena.allocator();
 
         break :read try read.read(.{
-            .data_section = data_section[0..header.data_section_size],
+            .data_section = data_section[0..out_header.data_section_size],
             .scratch_alloc = scratch_alloc,
             .schema = chunk.schema,
             .alloc = out_alloc,
-            .header = &header,
+            .header = &out_header,
         });
     };
 

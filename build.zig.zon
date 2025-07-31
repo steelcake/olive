@@ -17,12 +17,12 @@
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.18.tar.gz",
-            .hash = "arrow-0.0.18-ZFEaqPTVBgDpv6ODj7fGp3lnFWeT7S7kcIby-9rcSDZi",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.19.tar.gz",
+            .hash = "arrow-0.0.19-ZFEaqIrWBgDrF3IYRq4lwZmj1yzrwO2snl09fcehZEMb",
         },
         .borsh = .{
-            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.3.tar.gz",
-            .hash = "borsh-0.0.3-vlKk2U94AAB5re-T-ECyVJDbLTKDPq0kBJEMt6PdIcGb",
+            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.6.tar.gz",
+            .hash = "borsh-0.0.6-vlKk2WpyAAAMYncBLi5JX2kuNKh0uPeZoQFAGFHf55YM",
         },
     },
     .paths = .{
