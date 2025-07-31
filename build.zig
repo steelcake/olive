@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     // So create one target per fuzz target using this function and run the commands seperately.
     add_fuzz_target(b, deps, "fuzz_roundtrip", "src/fuzz_roundtrip.zig", "run fuzz tests for read/write roundtrip", target, optimize);
     add_fuzz_target(b, deps, "fuzz_read", "src/fuzz_read.zig", "run fuzz tests for read", target, optimize);
+    add_fuzz_target(b, deps, "fuzz_header_de", "src/fuzz_header_de.zig", "run fuzz tests for deserializing header", target, optimize);
 }
 
 fn add_fuzz_target(b: *std.Build, deps: Dependencies, command_name: []const u8, root_source_file: []const u8, description: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
