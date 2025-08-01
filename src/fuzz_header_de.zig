@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const arrow = @import("arrow");
 const validate = arrow.validate.validate;
@@ -19,13 +18,13 @@ fn to_fuzz(_: void, input: []const u8) anyerror!void {
         }
     }
 
-    var arena = ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const de_buf = try gpa.alloc(u8, 1 << 14);
+    defer gpa.free(de_buf);
 
-    _ = header.Header.deserialize(input, alloc, 30) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else return;
-    };
+    var fb_alloc = std.heap.FixedBufferAllocator.init(de_buf);
+    const alloc = fb_alloc.allocator();
+
+    _ = header.Header.deserialize(input, alloc, 30) catch {};
 }
 
 test "fuzz" {

@@ -53,6 +53,10 @@ pub const TableSchema = struct {
     has_minmax_index: []const bool,
 
     pub fn validate(self: *const TableSchema) Error!void {
+        if (self.field_names.len == 0) {
+            return Error.Invalid;
+        }
+
         try validate_names(self.field_names);
 
         if (self.field_names.len != self.data_types.len) {
@@ -106,6 +110,10 @@ pub const DatasetSchema = struct {
 
     /// Validate this schema for any inconsistencies
     pub fn validate(self: *const DatasetSchema) Error!void {
+        if (self.table_names.len == 0) {
+            return Error.Invalid;
+        }
+
         try validate_names(self.table_names);
 
         if (self.table_names.len != self.tables.len) {
@@ -117,6 +125,10 @@ pub const DatasetSchema = struct {
         }
 
         for (self.dicts, 0..) |dict, dict_idx| {
+            if (dict.members.len == 0) {
+                return Error.Invalid;
+            }
+
             for (dict.members) |member| {
                 if (member.table_index >= self.tables.len) {
                     return Error.Invalid;

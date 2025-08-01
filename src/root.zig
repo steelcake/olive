@@ -13,8 +13,10 @@ pub const compression = @import("./compression.zig");
 pub const read = @import("./read.zig");
 const dict = @import("./dict.zig");
 pub const chunk = @import("./chunk.zig");
+pub const fuzz_input = @import("./fuzz_input.zig");
 
 test {
+    _ = fuzz_input;
     _ = chunk;
     _ = dict;
     _ = read;
