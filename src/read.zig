@@ -25,7 +25,6 @@ const Error = error{
     LengthMismatch,
     BufferTooBig,
     ValidationError,
-    DataSectionSizeMismatch,
 };
 
 pub const Read = struct {
@@ -38,12 +37,15 @@ pub const Read = struct {
 
 pub fn read(params: Read) Error!chunk.Chunk {
     if (params.header.data_section_size != params.data_section.len) {
-        return Error.DataSectionSizeMismatch;
+        return Error.ValidationError;
     }
 
     const tables = try params.alloc.alloc(chunk.Table, params.schema.tables.len);
     const dicts = try params.alloc.alloc(arr.FixedSizeBinaryArray, params.schema.dicts.len);
 
+    if (params.schema.tables.len != params.header.tables.len) {
+        return Error.ValidationError;
+    }
     for (params.schema.tables, params.header.tables, 0..) |table_schema, table_header, table_idx| {
         const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 

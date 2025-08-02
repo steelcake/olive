@@ -47,7 +47,7 @@ pub const FuzzInput = struct {
 
         const dict_schemas_buf = try alloc.alloc(schema_mod.DictSchema, num_dicts);
         var dict_count: u32 = 0;
-        for (0..num_dicts) |dict_idx| {
+        for (0..num_dicts) |_| {
             const num_members = (try self.inner.int(u8)) % 10;
             const members = try alloc.alloc(schema_mod.DictMember, num_members);
 
@@ -63,7 +63,7 @@ pub const FuzzInput = struct {
                     }
                 }
 
-                for (dict_schemas_buf[0..dict_idx]) |other_dict| {
+                for (dict_schemas_buf[0..dict_count]) |other_dict| {
                     for (other_dict.members) |memb| {
                         if (memb.table_index == table_index and memb.field_index == field_index) {
                             // other dict has this member
@@ -185,7 +185,7 @@ pub const FuzzInput = struct {
 
         const dict_schemas_buf = try alloc.alloc(schema_mod.DictSchema, num_dicts);
         var dict_count: u32 = 0;
-        for (0..num_dicts) |dict_idx| {
+        for (0..num_dicts) |_| {
             const num_members = (try self.inner.int(u8)) % 10;
             const members = try alloc.alloc(schema_mod.DictMember, num_members);
 
@@ -201,7 +201,7 @@ pub const FuzzInput = struct {
                     }
                 }
 
-                for (dict_schemas_buf[0..dict_idx]) |other_dict| {
+                for (dict_schemas_buf[0..dict_count]) |other_dict| {
                     for (other_dict.members) |memb| {
                         if (memb.table_index == table_index and memb.field_index == field_index) {
                             // other dict has this member
