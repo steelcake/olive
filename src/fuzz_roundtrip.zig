@@ -64,7 +64,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
     const header_bytes_buf = try alloc.alloc(u8, 1 << 14);
     defer alloc.free(header_bytes_buf);
-    const header_bytes_len = try borsh.serde.serialize(header_mod.Header, &input_header, header_bytes_buf, 20);
+    const header_bytes_len = try borsh.serde.serialize(header_mod.Header, &input_header, header_bytes_buf, 40);
     const header_bytes = header_bytes_buf[0..header_bytes_len];
 
     var out_arena = ArenaAllocator.init(alloc);
@@ -73,7 +73,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
     var out_header_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
     const out_header_alloc = out_header_fb_alloc.allocator();
-    const out_header = try borsh.serde.deserialize(header_mod.Header, header_bytes, out_header_alloc, 20);
+    const out_header = try borsh.serde.deserialize(header_mod.Header, header_bytes, out_header_alloc, 40);
 
     const out_chunk = read: {
         var scratch_arena = ArenaAllocator.init(alloc);
