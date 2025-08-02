@@ -42,13 +42,15 @@ fn to_fuzz(data: []const u8) anyerror!void {
         const scratch_alloc = scratch_arena.allocator();
 
         var h = head;
-        h.data_section_size = input.inner.data.len;
+
+        h.data_section_size = @intCast(@min(input.inner.data.len, std.math.maxInt(u32)));
+
         break :read read.read(.{
             .alloc = alloc,
             .header = &h,
             .schema = &schema,
             .scratch_alloc = scratch_alloc,
-            .data_section = input.inner.data,
+            .data_section = input.inner.data[0..h.data_section_size],
         }) catch return;
     };
 
