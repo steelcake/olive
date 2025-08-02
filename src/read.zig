@@ -47,6 +47,10 @@ pub fn read(params: Read) Error!chunk.Chunk {
         return Error.ValidationError;
     }
     for (params.schema.tables, params.header.tables, 0..) |table_schema, table_header, table_idx| {
+        if (table_schema.data_types.len != table_header.fields.len) {
+            return Error.ValidationError;
+        }
+
         const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 
         for (table_schema.data_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
@@ -60,6 +64,9 @@ pub fn read(params: Read) Error!chunk.Chunk {
         };
     }
 
+    if (params.schema.dicts.len != params.header.dicts.len) {
+        return Error.ValidationError;
+    }
     for (params.schema.dicts, params.header.dicts, 0..) |dict_schema, dict_header, dict_idx| {
         dicts[dict_idx] = try read_fixed_size_binary(params, dict_schema.byte_width, &dict_header.data);
     }
@@ -126,7 +133,7 @@ fn check_field_type(field_type: DataType, field_header: *const header.Array) Err
 
 fn read_array(params: Read, field_type: DataType, field_header: *const header.Array) Error!arr.Array {
     try check_field_type(field_type, field_header);
-    return switch (field_type) {
+    const array: arr.Array = switch (field_type) {
         .null => .{ .null = .{ .len = field_header.null.len } },
         .i8 => .{ .i8 = try read_primitive(i8, params, &field_header.i8) },
         .i16 => .{ .i16 = try read_primitive(i16, params, &field_header.i16) },
@@ -172,6 +179,12 @@ fn read_array(params: Read, field_type: DataType, field_header: *const header.Ar
         .large_list_view => |inner_t| .{ .large_list_view = try read_list_view(.i64, params, inner_t.*, &field_header.list) },
         .dict => |dict_t| .{ .dict = try read_dict(params, dict_t.*, &field_header.dict) },
     };
+
+    arrow.validate.validate(&array) catch {
+        return Error.ValidationError;
+    };
+
+    return array;
 }
 
 fn read_dict(params: Read, dict_t: DictType, field_header: *const header.DictArray) Error!arr.DictArray {
@@ -438,6 +451,10 @@ fn read_sparse_union(params: Read, union_type: UnionType, field_header: *const h
 
 fn read_struct(params: Read, struct_type: StructType, field_header: *const header.StructArray) Error!arr.StructArray {
     const len = field_header.len;
+
+    if (struct_type.field_types.len != field_header.field_values.len) {
+        return Error.ValidationError;
+    }
 
     const field_values = try params.alloc.alloc(arr.Array, struct_type.field_types.len);
     for (struct_type.field_types, field_header.field_values, 0..) |field_type, *field_h, field_idx| {
