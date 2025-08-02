@@ -40,9 +40,12 @@ fn to_fuzz(data: []const u8) anyerror!void {
         var scratch_arena = std.heap.ArenaAllocator.init(alloc);
         defer scratch_arena.deinit();
         const scratch_alloc = scratch_arena.allocator();
+
+        var h = head;
+        h.data_section_size = input.inner.data.len;
         break :read read.read(.{
             .alloc = alloc,
-            .header = &head,
+            .header = &h,
             .schema = &schema,
             .scratch_alloc = scratch_alloc,
             .data_section = input.inner.data,
