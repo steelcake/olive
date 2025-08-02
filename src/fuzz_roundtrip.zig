@@ -71,7 +71,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
     defer out_arena.deinit();
     const out_alloc = out_arena.allocator();
 
-    var out_header_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 14));
+    var out_header_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
     const out_header_alloc = out_header_fb_alloc.allocator();
     const out_header = try borsh.serde.deserialize(header_mod.Header, header_bytes, out_header_alloc, 20);
 
