@@ -99,3 +99,20 @@ pub fn decompress(src: []const u8, dst: []u8, algo: Compression) DecompressError
         },
     }
 }
+
+test "smoke compression" {
+    const input = &.{ 1, 2, 3, 4, 5, 6, 7 };
+
+    const output = try std.testing.allocator.alloc(u8, compress_bound(input.len));
+    defer std.testing.allocator.free(output);
+
+    const compressed_size = try compress(input, output, .lz4);
+
+    const decompressed = try std.testing.allocator.alloc(u8, input.len);
+    defer std.testing.allocator.free(decompressed);
+
+    try decompress(output[0..compressed_size], decompressed, .lz4);
+
+    try std.testing.expectEqualSlices(u8, input, decompressed);
+    // try decompress(&.{}, &.{}, .lz4);
+}

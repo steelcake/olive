@@ -851,10 +851,6 @@ fn write_page(params: WritePage) Error!usize {
 }
 
 fn compress(src: []const u8, dst: []u8, compr: *?Compression, compr_cfg: Compression) Error!usize {
-    if (src.len == 0) {
-        return 0;
-    }
-
     if (compr.*) |algo| {
         return try compression.compress(src, dst, algo);
     }
