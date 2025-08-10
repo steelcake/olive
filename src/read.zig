@@ -29,7 +29,7 @@ const Error = error{
 
 pub const Read = struct {
     header: *const header.Header,
-    schema: *const schema.DatasetSchema,
+    schema: *const schema.Schema,
     alloc: Allocator,
     scratch_alloc: Allocator,
     data_section: []const u8,

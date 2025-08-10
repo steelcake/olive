@@ -1,4 +1,7 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const borsh = @import("borsh");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
 const Compression = @import("./compression.zig");
@@ -47,10 +50,36 @@ fn validate_names(names: []const []const u8) Error!void {
 }
 
 pub const TableSchema = struct {
-    field_names: []const [:0]const u8,
+    field_names: []const []const u8,
     data_types: []const DataType,
     /// Minmax index is only supported for primitive and binary types
     has_minmax_index: []const bool,
+
+    pub fn eql(self: *const TableSchema, other: *const TableSchema) bool {
+        if (self.field_names.len != other.field_names.len) {
+            return false;
+        }
+        for (self.field_names, other.field_names) |sfn, ofn| {
+            if (!std.mem.eql(u8, sfn, ofn)) {
+                return false;
+            }
+        }
+
+        if (self.data_types.len != other.data_types.len) {
+            return false;
+        }
+        for (self.data_types, other.data_types) |*sdt, *odt| {
+            if (!sdt.eql(odt)) {
+                return false;
+            }
+        }
+
+        if (!std.mem.eql(bool, self.has_minmax_index, other.has_minmax_index)) {
+            return false;
+        }
+
+        return true;
+    }
 
     pub fn validate(self: *const TableSchema) Error!void {
         if (self.field_names.len == 0) {
@@ -73,8 +102,12 @@ pub const TableSchema = struct {
     }
 
     pub fn check(self: *const TableSchema, table: []const arrow.array.Array) Error!void {
-        std.debug.assert(self.field_names.len == self.data_types.len);
-        std.debug.assert(self.field_names.len == self.has_minmax_index.len);
+        if (self.field_names.len != self.data_types.len) {
+            return Error.Invalid;
+        }
+        if (self.field_names.len != self.has_minmax_index.len) {
+            return Error.Invalid;
+        }
 
         if (self.data_types.len != table.len) {
             return Error.Invalid;
@@ -101,15 +134,86 @@ pub const DictSchema = struct {
     has_filter: bool,
     /// length of each string in the dictionary, will be used for constructing arrow.FixedSizeBinaryArray
     byte_width: i32,
+
+    pub fn eql(self: *const DictSchema, other: *const DictSchema) bool {
+        if (self.members.len != other.members.len) {
+            return false;
+        }
+        for (self.members, other.members) |sm, om| {
+            if (sm.table_index != om.table_index or sm.field_index != om.table_index) {
+                return false;
+            }
+        }
+
+        if (self.has_filter != other.has_filter) {
+            return false;
+        }
+
+        if (self.byte_width != other.byte_width) {
+            return false;
+        }
+
+        return true;
+    }
 };
 
-pub const DatasetSchema = struct {
+const SerdeError = error{
+    BorshError,
+    OutOfMemory,
+    /// Buffer isn't big enough to hold the output
+    BufferTooSmall,
+};
+
+pub const Schema = struct {
     table_names: []const []const u8,
     tables: []const TableSchema,
     dicts: []const DictSchema,
 
+    pub fn deserialize(input: []const u8, alloc: Allocator, max_recursion_depth: u8) SerdeError!Schema {
+        return borsh.serde.deserialize(Schema, input, alloc, max_recursion_depth) catch |e| {
+            if (e == error.OutOfMemory) return SerdeError.OutOfMemory else return SerdeError.BorshError;
+        };
+    }
+
+    pub fn serialize(self: *const Schema, output: []u8, max_recursion_depth: u8) SerdeError!usize {
+        return borsh.serde.serialize(Schema, self, output, max_recursion_depth) catch |e| {
+            if (e == error.BufferTooSmall) return SerdeError.BufferTooSmall else return SerdeError.BorshError;
+        };
+    }
+
+    pub fn eql(self: *const Schema, other: *const Schema) bool {
+        if (self.table_names.len != other.table_names.len) {
+            return false;
+        }
+        for (self.table_names, other.table_names) |st, ot| {
+            if (!std.mem.eql(u8, st, ot)) {
+                return false;
+            }
+        }
+
+        if (self.tables.len != other.tables.len) {
+            return false;
+        }
+        for (self.tables, other.tables) |*st, *ot| {
+            if (!st.eql(ot)) {
+                return false;
+            }
+        }
+
+        if (self.dicts.len != other.dicts.len) {
+            return false;
+        }
+        for (self.dicts, other.dicts) |*sd, *od| {
+            if (!sd.eql(od)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// Validate this schema for any inconsistencies
-    pub fn validate(self: *const DatasetSchema) Error!void {
+    pub fn validate(self: *const Schema) Error!void {
         if (self.table_names.len == 0) {
             return Error.Invalid;
         }
@@ -156,8 +260,10 @@ pub const DatasetSchema = struct {
     }
 
     /// Check if given data matches with the schema
-    pub fn check(self: *const DatasetSchema, tables: []const []const arrow.array.Array) Error!void {
-        std.debug.assert(self.table_names.len == self.tables.len);
+    pub fn check(self: *const Schema, tables: []const []const arrow.array.Array) Error!void {
+        if (self.table_names.len != self.tables.len) {
+            return Error.Invalid;
+        }
 
         if (self.tables.len != tables.len) {
             return Error.Invalid;

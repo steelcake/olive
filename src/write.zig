@@ -18,6 +18,7 @@ pub const Error = error{
     DataSectionOverflow,
     NonBinaryArrayWithDict,
     CompressFail,
+    FilterConstructFail,
 };
 
 pub const Write = struct {
@@ -52,7 +53,11 @@ pub fn write(params: Write) Error!header.Header {
             const filter = if (params.filter_alloc) |filter_alloc| build: {
                 if (dict_schema.has_filter) {
                     break :build header.Filter.construct(dict, filter_alloc, params.scratch_alloc) catch |e| {
-                        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+                        switch (e) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.ConstructFail => return error.FilterConstructFail,
+                            else => unreachable,
+                        }
                     };
                 } else {
                     break :build null;

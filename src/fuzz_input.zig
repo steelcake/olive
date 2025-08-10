@@ -143,8 +143,8 @@ pub const FuzzInput = struct {
             };
         }
 
-        const schema = try alloc.create(schema_mod.DatasetSchema);
-        schema.* = schema_mod.DatasetSchema{
+        const schema = try alloc.create(schema_mod.Schema);
+        schema.* = schema_mod.Schema{
             .tables = table_schemas,
             .table_names = table_names,
             .dicts = dict_schemas,
@@ -174,7 +174,7 @@ pub const FuzzInput = struct {
         return chunk;
     }
 
-    pub fn make_schema(self: *FuzzInput, alloc: Allocator, scratch_alloc: Allocator) Error!schema_mod.DatasetSchema {
+    pub fn make_schema(self: *FuzzInput, alloc: Allocator, scratch_alloc: Allocator) Error!schema_mod.Schema {
         const num_tables = (try self.inner.int(u8)) % 10 + 1;
         const num_dicts = (try self.inner.int(u8)) % 4;
 
@@ -262,7 +262,7 @@ pub const FuzzInput = struct {
             };
         }
 
-        const schema = schema_mod.DatasetSchema{
+        const schema = schema_mod.Schema{
             .tables = table_schemas,
             .table_names = table_names,
             .dicts = dict_schemas,

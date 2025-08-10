@@ -21,8 +21,8 @@
             .hash = "arrow-0.0.22-ZFEaqGIABwASzke6CzJW-HYw4nEDDEXiETZw6hLMsbBB",
         },
         .borsh = .{
-            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.6.tar.gz",
-            .hash = "borsh-0.0.6-vlKk2WpyAAAMYncBLi5JX2kuNKh0uPeZoQFAGFHf55YM",
+            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.7.tar.gz",
+            .hash = "borsh-0.0.7-vlKk2dp7AABfXbxEcRwoZS585UCXnH0ZXnzYhxxmGxfZ",
         },
     },
     .paths = .{

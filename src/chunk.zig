@@ -5,7 +5,7 @@ const arrow = @import("arrow");
 const arr = arrow.array;
 
 const schema_impl = @import("./schema.zig");
-const DatasetSchema = schema_impl.DatasetSchema;
+const Schema = schema_impl.Schema;
 const dict_impl = @import("./dict.zig");
 
 const Error = error{
@@ -22,7 +22,7 @@ pub const Table = struct {
 pub const Chunk = struct {
     tables: []const Table,
     dicts: []const arr.FixedSizeBinaryArray,
-    schema: *const schema_impl.DatasetSchema,
+    schema: *const schema_impl.Schema,
 
     pub fn to_arrow(self: *const Chunk, alloc: Allocator) Error![]const []const arr.Array {
         const out = try alloc.alloc([]const arr.Array, self.tables.len);
@@ -44,7 +44,7 @@ pub const Chunk = struct {
         return out;
     }
 
-    pub fn from_arrow(schema: *const DatasetSchema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
+    pub fn from_arrow(schema: *const Schema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
         const out = try alloc.alloc(Table, tables.len);
 
         const num_dicts = schema.dicts.len;

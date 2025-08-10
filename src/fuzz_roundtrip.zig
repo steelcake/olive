@@ -13,7 +13,7 @@ const Chunk = chunk_mod.Chunk;
 const write = @import("./write.zig");
 const read = @import("./read.zig");
 const schema_mod = @import("./schema.zig");
-const DatasetSchema = schema_mod.DatasetSchema;
+const Schema = schema_mod.Schema;
 const TableSchema = schema_mod.TableSchema;
 const dict_impl = @import("./dict.zig");
 const header_mod = @import("./header.zig");
@@ -62,9 +62,14 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         });
     };
 
+    const schema_bytes_buf = try alloc.alloc(u8, 1 << 19);
+    defer alloc.free(schema_bytes_buf);
+    const schema_bytes_len = try chunk.schema.serialize(schema_bytes_buf, 40);
+    const schema_bytes = schema_bytes_buf[0..schema_bytes_len];
+
     const header_bytes_buf = try alloc.alloc(u8, 1 << 19);
     defer alloc.free(header_bytes_buf);
-    const header_bytes_len = try borsh.serde.serialize(header_mod.Header, &input_header, header_bytes_buf, 40);
+    const header_bytes_len = try input_header.serialize(header_bytes_buf, 40);
     const header_bytes = header_bytes_buf[0..header_bytes_len];
 
     var out_arena = ArenaAllocator.init(alloc);
@@ -73,7 +78,12 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
 
     var out_header_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
     const out_header_alloc = out_header_fb_alloc.allocator();
-    const out_header = try borsh.serde.deserialize(header_mod.Header, header_bytes, out_header_alloc, 40);
+    const out_header = try header_mod.Header.deserialize(header_bytes, out_header_alloc, 40);
+
+    var out_schema_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
+    const out_schema_alloc = out_schema_fb_alloc.allocator();
+    const out_schema = try schema_mod.Schema.deserialize(schema_bytes, out_schema_alloc, 40);
+    std.debug.assert(chunk.schema.eql(&out_schema));
 
     const out_chunk = read: {
         var scratch_arena = ArenaAllocator.init(alloc);
