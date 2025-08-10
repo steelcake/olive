@@ -62,7 +62,7 @@ fn roundtrip_test(input: *FuzzInput, alloc: Allocator) !void {
         });
     };
 
-    const header_bytes_buf = try alloc.alloc(u8, 1 << 14);
+    const header_bytes_buf = try alloc.alloc(u8, 1 << 19);
     defer alloc.free(header_bytes_buf);
     const header_bytes_len = try borsh.serde.serialize(header_mod.Header, &input_header, header_bytes_buf, 40);
     const header_bytes = header_bytes_buf[0..header_bytes_len];
