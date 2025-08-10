@@ -24,7 +24,8 @@ fn to_fuzz(_: void, input: []const u8) anyerror!void {
     var fb_alloc = std.heap.FixedBufferAllocator.init(de_buf);
     const alloc = fb_alloc.allocator();
 
-    _ = schema.Schema.deserialize(input, alloc, 30) catch {};
+    const sch = schema.Schema.deserialize(input, alloc, 30) catch return;
+    sch.validate() catch return;
 }
 
 test "fuzz" {
