@@ -140,7 +140,7 @@ pub const DictSchema = struct {
             return false;
         }
         for (self.members, other.members) |sm, om| {
-            if (sm.table_index != om.table_index or sm.field_index != om.table_index) {
+            if (sm.table_index != om.table_index or sm.field_index != om.field_index) {
                 return false;
             }
         }
