@@ -2,11 +2,11 @@
     .name = .olive,
     .version = "0.0.0",
     .fingerprint = 0xaf0be4322c7292de, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.0-dev.822+dd75e7bcb",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .filterz = .{
-            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.8.tar.gz",
-            .hash = "filterz-0.0.8-n5a11xrNAABLxpovJg6Vi494jZ2jAkRIT2H5lIHJhc76",
+            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.9.tar.gz",
+            .hash = "filterz-0.0.9-n5a113jFAABpO0MB2IYWpLGvf5uDfxtWs1H1aZhwg3d4",
         },
         .zstd = .{
             .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
@@ -17,12 +17,12 @@
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.22.tar.gz",
-            .hash = "arrow-0.0.22-ZFEaqGIABwASzke6CzJW-HYw4nEDDEXiETZw6hLMsbBB",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.23.tar.gz",
+            .hash = "arrow-0.0.23-ZFEaqFAABwDWkqLknM-XBHzA5wjQhYd_RQuB0NM9cTWL",
         },
         .borsh = .{
-            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.7.tar.gz",
-            .hash = "borsh-0.0.7-vlKk2dp7AABfXbxEcRwoZS585UCXnH0ZXnzYhxxmGxfZ",
+            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.8.tar.gz",
+            .hash = "borsh-0.0.8-vlKk2ch7AAB1TQVQTAddxOdViMY-I7bXCmghNaK49o2I",
         },
     },
     .paths = .{
