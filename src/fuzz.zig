@@ -7,24 +7,36 @@ const olive = @import("olive");
 const arrow = @import("arrow");
 
 fn fuzz_schema_de(data: []const u8, gpa: Allocator) !void {
-    const de_buf = try gpa.alloc(u8, 1 << 14);
-    defer gpa.free(de_buf);
-
-    var fb_alloc = std.heap.FixedBufferAllocator.init(de_buf);
-    const alloc = fb_alloc.allocator();
+    var arena = ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     const sch = olive.schema.Schema.deserialize(data, alloc, 30) catch return;
     sch.validate() catch return;
 }
 
+test "fuzz schema deserialize" {
+    try FuzzWrap(fuzz_schema_de, 1 << 25).run();
+}
+
+fn fuzz_header_de(data: []const u8, gpa: Allocator) !void {
+    var arena = ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    _ = olive.header.Header.deserialize(data, alloc, 30) catch {};
+}
+
+test "fuzz header deserialize" {
+    try FuzzWrap(fuzz_header_de, 1 << 25).run();
+}
+
 fn fuzz_read(data: []const u8, gpa: Allocator) !void {
     var input = olive.fuzz_input.FuzzInput.init(data);
 
-    const alloc_buf = try gpa.alloc(u8, 1 << 28);
-    defer gpa.free(alloc_buf);
-
-    var fba = std.heap.FixedBufferAllocator.init(alloc_buf);
-    const alloc = fba.allocator();
+    var arena = ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     const head = try input.make_header(alloc);
 
@@ -68,23 +80,52 @@ fn fuzz_read(data: []const u8, gpa: Allocator) !void {
     }
 }
 
-fn fuzz_header_de(data: []const u8, gpa: Allocator) !void {
-    const de_buf = try gpa.alloc(u8, 1 << 14);
-    defer gpa.free(de_buf);
-
-    var fb_alloc = std.heap.FixedBufferAllocator.init(de_buf);
-    const alloc = fb_alloc.allocator();
-
-    _ = olive.header.Header.deserialize(data, alloc, 30) catch {};
+test "fuzz read" {
+    try FuzzWrap(fuzz_read, 1 << 25).run();
 }
 
 fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
+    const StaticBufs = struct {
+        var data_section: ?[]u8 = null;
+        var header_bytes_buf: ?[]u8 = null;
+        var schema_bytes_buf: ?[]u8 = null;
+
+        fn get_data_section() []u8 {
+            if (data_section) |ds| {
+                return ds;
+            } else {
+                const ds = std.heap.page_allocator.alloc(u8, 1 << 28) catch unreachable;
+                data_section = ds;
+                return ds;
+            }
+        }
+
+        fn get_header_bytes_buf() []u8 {
+            if (header_bytes_buf) |b| {
+                return b;
+            } else {
+                const b = std.heap.page_allocator.alloc(u8, 1 << 20) catch unreachable;
+                header_bytes_buf = b;
+                return b;
+            }
+        }
+
+        fn get_schema_bytes_buf() []u8 {
+            if (schema_bytes_buf) |b| {
+                return b;
+            } else {
+                const b = std.heap.page_allocator.alloc(u8, 1 << 20) catch unreachable;
+                schema_bytes_buf = b;
+                return b;
+            }
+        }
+    };
+
     var input = olive.fuzz_input.FuzzInput.init(data);
 
-    const chunk_buf = try alloc.alloc(u8, 1 << 24);
-    defer alloc.free(chunk_buf);
-    var chunk_fb_alloc = FixedBufferAllocator.init(chunk_buf);
-    const chunk_alloc = chunk_fb_alloc.allocator();
+    var chunk_arena = ArenaAllocator.init(alloc);
+    defer chunk_arena.deinit();
+    const chunk_alloc = chunk_arena.allocator();
 
     const chunk = make_chunk: {
         var scratch_arena = ArenaAllocator.init(alloc);
@@ -104,8 +145,7 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
     // max should be 16 MB since the number is in KB and min should be 1 KB
     const page_size_kb = (try input.inner.int(u32)) % (1 << 14) + 1;
 
-    const data_section = try alloc.alloc(u8, 1 << 28);
-    defer alloc.free(data_section);
+    const data_section = StaticBufs.get_data_section();
 
     const input_header = write: {
         var scratch_arena = ArenaAllocator.init(alloc);
@@ -123,13 +163,11 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
         });
     };
 
-    const schema_bytes_buf = try alloc.alloc(u8, 1 << 19);
-    defer alloc.free(schema_bytes_buf);
+    const schema_bytes_buf = StaticBufs.get_schema_bytes_buf();
     const schema_bytes_len = try chunk.schema.serialize(schema_bytes_buf, 40);
     const schema_bytes = schema_bytes_buf[0..schema_bytes_len];
 
-    const header_bytes_buf = try alloc.alloc(u8, 1 << 19);
-    defer alloc.free(header_bytes_buf);
+    const header_bytes_buf = StaticBufs.get_header_bytes_buf();
     const header_bytes_len = try input_header.serialize(header_bytes_buf, 40);
     const header_bytes = header_bytes_buf[0..header_bytes_len];
 
@@ -137,13 +175,8 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
     defer out_arena.deinit();
     const out_alloc = out_arena.allocator();
 
-    var out_header_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
-    const out_header_alloc = out_header_fb_alloc.allocator();
-    const out_header = try olive.header.Header.deserialize(header_bytes, out_header_alloc, 40);
-
-    var out_schema_fb_alloc = std.heap.FixedBufferAllocator.init(try out_alloc.alloc(u8, 1 << 19));
-    const out_schema_alloc = out_schema_fb_alloc.allocator();
-    const out_schema = try olive.schema.Schema.deserialize(schema_bytes, out_schema_alloc, 40);
+    const out_header = try olive.header.Header.deserialize(header_bytes, out_alloc, 40);
+    const out_schema = try olive.schema.Schema.deserialize(schema_bytes, out_alloc, 40);
     std.debug.assert(chunk.schema.eql(&out_schema));
 
     const out_chunk = read: {
@@ -186,43 +219,44 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
     }
 }
 
-const FuzzContext = struct {
-    fb_alloc: *FixedBufferAllocator,
-};
+test "fuzz roundtrip" {
+    try FuzzWrap(fuzz_roundtrip, 1 << 25).run();
+}
 
-fn run_fuzz_test(comptime fuzz_one: fn (data: []const u8, gpa: Allocator) anyerror!void, data: []const u8, fb_alloc: *FixedBufferAllocator) anyerror!void {
-    fb_alloc.reset();
-
-    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
-        .backing_allocator_zeroes = false,
-    }){
-        .backing_allocator = fb_alloc.allocator(),
+fn FuzzWrap(comptime fuzz_one: fn (data: []const u8, gpa: Allocator) anyerror!void, comptime alloc_size: comptime_int) type {
+    const FuzzContext = struct {
+        fb_alloc: *FixedBufferAllocator,
     };
-    const gpa = general_purpose_allocator.allocator();
-    defer {
-        switch (general_purpose_allocator.deinit()) {
-            .ok => {},
-            .leak => |l| {
-                std.debug.panic("LEAK: {any}", .{l});
-            },
+
+    return struct {
+        fn run_one(ctx: FuzzContext, data: []const u8) anyerror!void {
+            ctx.fb_alloc.reset();
+
+            var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
+                .backing_allocator_zeroes = false,
+            }){
+                .backing_allocator = ctx.fb_alloc.allocator(),
+            };
+            const gpa = general_purpose_allocator.allocator();
+            defer {
+                switch (general_purpose_allocator.deinit()) {
+                    .ok => {},
+                    .leak => |l| {
+                        std.debug.panic("LEAK: {any}", .{l});
+                    },
+                }
+            }
+
+            fuzz_one(data, gpa) catch |e| {
+                if (e == error.ShortInput) return {} else return e;
+            };
         }
-    }
 
-    fuzz_one(data, gpa) catch |e| {
-        if (e == error.ShortInput) return {} else return e;
+        fn run() !void {
+            var fb_alloc = FixedBufferAllocator.init(std.heap.page_allocator.alloc(u8, alloc_size) catch unreachable);
+            try std.testing.fuzz(FuzzContext{
+                .fb_alloc = &fb_alloc,
+            }, run_one, .{});
+        }
     };
-}
-
-fn to_fuzz_wrap(ctx: FuzzContext, data: []const u8) anyerror!void {
-    try run_fuzz_test(fuzz_roundtrip, data, ctx.fb_alloc);
-    try run_fuzz_test(fuzz_header_de, data, ctx.fb_alloc);
-    try run_fuzz_test(fuzz_read, data, ctx.fb_alloc);
-    try run_fuzz_test(fuzz_schema_de, data, ctx.fb_alloc);
-}
-
-test "fuzz" {
-    var fb_alloc = FixedBufferAllocator.init(std.heap.page_allocator.alloc(u8, 1 << 30) catch unreachable);
-    try std.testing.fuzz(FuzzContext{
-        .fb_alloc = &fb_alloc,
-    }, to_fuzz_wrap, .{});
 }
