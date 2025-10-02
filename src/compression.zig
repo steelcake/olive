@@ -1,7 +1,15 @@
 const std = @import("std");
-const lz4hc = @cImport(@cInclude("lz4hc.h"));
-const lz4 = @cImport(@cInclude("lz4.h"));
-const zstd = @cImport(@cInclude("zstd.h"));
+
+extern fn ZSTD_compressBound(src_size: usize) usize;
+extern fn ZSTD_compress(dst: *anyopaque, dst_capacity: usize, src: *const anyopaque, src_size: usize, compression_level: c_int) usize;
+extern fn ZSTD_decompress(dst: *anyopaque, dst_capacity: usize, src: *const anyopaque, compressed_size: usize) usize;
+extern fn ZSTD_isError(code: usize) c_uint;
+
+extern fn LZ4_compressBound(input_size: c_int) c_int;
+extern fn LZ4_compress_default(src: [*]const c_char, dst: [*]c_char, src_size: c_int, dst_capacity: c_int) c_int;
+extern fn LZ4_decompress_safe(src: [*]const c_char, dst: [*]c_char, compressed_size: c_int, dst_capacity: c_int) c_int;
+
+extern fn LZ4_compress_HC(src: [*]const c_char, dst: [*]c_char, src_size: c_int, dst_capacity: c_int, compression_level: c_int) c_int;
 
 pub const Compression = union(enum) {
     /// Memcopy
@@ -23,11 +31,11 @@ const DecompressError = error{
 };
 
 pub fn compress_bound(input_size: usize) usize {
-    return @max(zstd.ZSTD_compressBound(input_size), @as(usize, @intCast(lz4.LZ4_compressBound(@intCast(input_size)))), input_size);
+    return @max(ZSTD_compressBound(input_size), @as(usize, @intCast(LZ4_compressBound(@intCast(input_size)))), input_size);
 }
 
 fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
-    const lz4_size = lz4.LZ4_compress_default(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len));
+    const lz4_size = LZ4_compress_default(@ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len));
     if (lz4_size != 0) {
         return @intCast(lz4_size);
     } else {
@@ -36,8 +44,8 @@ fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
 }
 
 fn zstd_compress(src: []const u8, dst: []u8, level: u8) CompressError!usize {
-    const res = zstd.ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, level);
-    if (zstd.ZSTD_isError(res) == 0) {
+    const res = ZSTD_compress(dst.ptr, dst.len, src.ptr, src.len, level);
+    if (ZSTD_isError(res) == 0) {
         return res;
     } else {
         return CompressError.CompressFail;
@@ -45,7 +53,7 @@ fn zstd_compress(src: []const u8, dst: []u8, level: u8) CompressError!usize {
 }
 
 fn lz4_compress_hc(src: []const u8, dst: []u8, level: u8) CompressError!usize {
-    const res = lz4hc.LZ4_compress_HC(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len), level);
+    const res = LZ4_compress_HC(@ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len), level);
     if (res != 0) {
         return @intCast(res);
     } else {
@@ -72,14 +80,14 @@ pub fn compress(src: []const u8, dst: []u8, algo: Compression) CompressError!usi
 }
 
 fn zstd_decompress(src: []const u8, dst: []u8) DecompressError!void {
-    const res = zstd.ZSTD_decompress(dst.ptr, dst.len, src.ptr, src.len);
-    if (zstd.ZSTD_isError(res) != 0 or res != dst.len) {
+    const res = ZSTD_decompress(dst.ptr, dst.len, src.ptr, src.len);
+    if (ZSTD_isError(res) != 0 or res != dst.len) {
         return DecompressError.DecompressFail;
     }
 }
 
 fn lz4_decompress(src: []const u8, dst: []u8) DecompressError!void {
-    const res = lz4.LZ4_decompress_safe(src.ptr, dst.ptr, @intCast(src.len), @intCast(dst.len));
+    const res = LZ4_decompress_safe(@ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len));
     if (res < 0 or @as(usize, @intCast(res)) != dst.len) {
         return DecompressError.DecompressFail;
     }
