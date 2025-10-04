@@ -314,7 +314,7 @@ fn read_map(params: Read, map_type: MapType, field_header: *const header.MapArra
 
     const offsets = try read_buffer(i32, params, field_header.offsets);
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -350,7 +350,7 @@ fn read_fixed_size_list(params: Read, fsl_type: FixedSizeListType, field_header:
     const inner = try params.alloc.create(arr.Array);
     inner.* = try read_array(params, fsl_type.inner, field_header.inner);
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -372,7 +372,7 @@ fn read_fixed_size_binary(params: Read, byte_width: i32, field_header: *const he
 
     const data = try read_buffer(u8, params, field_header.data);
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -462,7 +462,7 @@ fn read_struct(params: Read, struct_type: StructType, field_header: *const heade
         field_values[field_idx] = try read_array(params, field_type, field_h);
     }
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -488,7 +488,7 @@ fn read_list(comptime index_t: arr.IndexType, params: Read, inner_type: DataType
     inner.* = try read_array(params, inner_type, field_header.inner);
     const offsets = try read_buffer(I, params, field_header.offsets);
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -511,7 +511,7 @@ fn read_interval(comptime interval_t: arr.IntervalType, params: Read, field_head
     const len = field_header.len;
 
     const values = try read_buffer(T, params, field_header.values);
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -533,7 +533,7 @@ fn read_bool(params: Read, field_header: *const header.BoolArray) Error!arr.Bool
     const len = field_header.len;
 
     const values = try read_buffer(u8, params, field_header.values);
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -557,7 +557,7 @@ fn read_binary(comptime index_t: arr.IndexType, params: Read, field_header: *con
     const data = try read_buffer(u8, params, field_header.data);
     const offsets = try read_buffer(I, params, field_header.offsets);
 
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -578,7 +578,7 @@ fn read_primitive(comptime T: type, params: Read, field_header: *const header.Pr
     const len = field_header.len;
 
     const values = try read_buffer(T, params, field_header.values);
-    const validity = try read_validity(params, field_header.validity);
+    const validity = try read_validity(params, field_header.validity, len);
 
     const null_count = if (validity) |v|
         arrow.bitmap.count_nulls(v, 0, len)
@@ -637,7 +637,13 @@ fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]co
     return out;
 }
 
-fn read_validity(params: Read, validity: ?header.Buffer) Error!?[]const u8 {
+fn read_validity(params: Read, validity: ?header.Buffer, expected_len: u32) Error!?[]const u8 {
     const v = if (validity) |x| x else return null;
-    return try read_buffer(u8, params, v);
+    const buf = try read_buffer(u8, params, v);
+    const expected_num_bytes = (expected_len + 7) / 8;
+    if (buf.len != expected_num_bytes) {
+        return Error.InvalidBufferLen;
+    }
+
+    return buf;
 }
