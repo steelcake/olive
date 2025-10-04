@@ -25,6 +25,7 @@ const Error = error{
     LengthMismatch,
     BufferTooBig,
     ValidationError,
+    InvalidBufferLen,
 };
 
 pub const Read = struct {
@@ -599,7 +600,9 @@ fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]co
         total_size += page.uncompressed_size;
     }
 
-    std.debug.assert(total_size % @sizeOf(T) == 0);
+    if (total_size % @sizeOf(T) != 0) {
+        return Error.InvalidBufferLen;
+    }
     const len = total_size / @sizeOf(T);
 
     const out = try params.alloc.alloc(T, len);
