@@ -626,6 +626,11 @@ fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]co
         if (params.data_section.len < page_end) {
             return Error.DataSectionTooSmall;
         }
+
+        if (buffer.compression == .no_compression and page.compressed_size != page.uncompressed_size) {
+            return Error.InvalidBufferLen;
+        }
+
         try compression.decompress(
             params.data_section[page.offset .. page.offset + page.compressed_size],
             out_raw[out_offset .. out_offset + page.uncompressed_size],
