@@ -595,14 +595,18 @@ fn read_primitive(comptime T: type, params: Read, field_header: *const header.Pr
 }
 
 fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]const T {
-    var total_size: u32 = 0;
+    var total_size: u64 = 0;
     for (buffer.pages) |page| {
         total_size += page.uncompressed_size;
     }
 
+    if (total_size > std.math.maxInt(u32) / 4) {
+        return Error.InvalidBufferLen;
+    }
     if (total_size % @sizeOf(T) != 0) {
         return Error.InvalidBufferLen;
     }
+
     const len = total_size / @sizeOf(T);
 
     const out = try params.alloc.alloc(T, len);
@@ -610,10 +614,23 @@ fn read_buffer(comptime T: type, params: Read, buffer: header.Buffer) Error![]co
 
     var out_offset: u32 = 0;
     for (buffer.pages) |page| {
-        if (params.data_section.len < page.offset + page.compressed_size) {
+        // check for possible overflow
+        const page_end: u64 = @as(u64, page.offset) + @as(u64, page.compressed_size);
+        if (page_end > std.math.maxInt(u32)) {
+            return Error.InvalidBufferLen;
+        }
+        if (@as(u64, out_offset) + @as(u64, page.uncompressed_size) > std.math.maxInt(u32)) {
+            return Error.InvalidBufferLen;
+        }
+
+        if (params.data_section.len < page_end) {
             return Error.DataSectionTooSmall;
         }
-        try compression.decompress(params.data_section[page.offset .. page.offset + page.compressed_size], out_raw[out_offset .. out_offset + page.uncompressed_size], buffer.compression);
+        try compression.decompress(
+            params.data_section[page.offset .. page.offset + page.compressed_size],
+            out_raw[out_offset .. out_offset + page.uncompressed_size],
+            buffer.compression,
+        );
         out_offset += page.uncompressed_size;
     }
 
