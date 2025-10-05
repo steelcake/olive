@@ -112,34 +112,36 @@ fn unpack_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *con
     return (builder.finish() catch unreachable);
 }
 
-pub fn apply_dict(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
+const DictLookup = std.StringHashMapUnmanaged(u32);
+
+pub fn apply_dict(dict: *const DictLookup, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
     switch (array.*) {
         .binary => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_array(.i32, dict, a, scratch_alloc);
         },
         .large_binary => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_array(.i64, dict, a, scratch_alloc);
         },
         .binary_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict_array, a, scratch_alloc);
+            return try apply_dict_to_binary_view_array(dict, a, scratch_alloc);
         },
         .fixed_size_binary => |*a| {
-            return try apply_dict_to_fixed_size_binary_array(dict_array, a, scratch_alloc);
+            return try apply_dict_to_fixed_size_binary_array(dict, a, scratch_alloc);
         },
         .utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_array(.i32, dict, &a.inner, scratch_alloc);
         },
         .large_utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_array(.i64, dict, &a.inner, scratch_alloc);
         },
         .utf8_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict_array, &a.inner, scratch_alloc);
+            return try apply_dict_to_binary_view_array(dict, &a.inner, scratch_alloc);
         },
         else => return Error.NonBinaryArrayWithDict,
     }
 }
 
-fn apply_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.BinaryViewArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
+fn apply_dict_to_binary_view_array(dict: *const DictLookup, array: *const arr.BinaryViewArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
     var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
@@ -150,7 +152,7 @@ fn apply_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray, 
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -159,14 +161,14 @@ fn apply_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray, 
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
         }
     }
 
     return (builder.finish() catch unreachable);
 }
 
-fn apply_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.FixedSizeBinaryArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
+fn apply_dict_to_fixed_size_binary_array(dict: *const DictLookup, array: *const arr.FixedSizeBinaryArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
     var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
@@ -177,7 +179,7 @@ fn apply_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinaryA
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -186,14 +188,14 @@ fn apply_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinaryA
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
-            builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
         }
     }
 
     return (builder.finish() catch unreachable);
 }
 
-fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.GenericBinaryArray(index_t), scratch_alloc: Allocator) Error!arr.UInt32Array {
+fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict: *const DictLookup, array: *const arr.GenericBinaryArray(index_t), scratch_alloc: Allocator) Error!arr.UInt32Array {
     var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
     };
@@ -204,7 +206,7 @@ fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *cons
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
             } else {
                 builder.append_null() catch unreachable;
             }
@@ -213,7 +215,7 @@ fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *cons
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
-            builder.append_value(find_dict_elem_idx(dict_array, s) orelse unreachable) catch unreachable;
+            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
         }
     }
 
@@ -221,17 +223,8 @@ fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *cons
 }
 
 /// Finds the index of the given element inside the given dict_array
-fn find_dict_elem_idx(dict_array: *const arr.FixedSizeBinaryArray, val: []const u8) ?u32 {
-    var idx: u32 = dict_array.offset;
-    while (idx < dict_array.offset + dict_array.len) : (idx += 1) {
-        const dict_elem = arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, idx);
-
-        if (std.mem.eql(u8, val, dict_elem)) {
-            return idx - dict_array.offset;
-        }
-    }
-
-    return null;
+fn find_dict_elem_idx(dict: *const DictLookup, val: []const u8) ?u32 {
+    return dict.get(val);
 }
 
 fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {

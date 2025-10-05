@@ -49,6 +49,7 @@ pub const Chunk = struct {
 
         const num_dicts = schema.dicts.len;
         const dict_arrays = try alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
+        const dict_lookup = try scratch_alloc.alloc(std.StringHashMapUnmanaged(u32), num_dicts);
 
         for (schema.dicts, 0..) |dict, dict_idx| {
             var num_elems: usize = 0;
@@ -66,6 +67,15 @@ pub const Chunk = struct {
             }
 
             elems = dict_impl.sort_and_dedup(elems[0..write_idx]);
+
+            var lookup = std.StringHashMapUnmanaged(u32){};
+            try lookup.ensureTotalCapacity(scratch_alloc, @intCast(elems.len));
+            var idx: u32 = 0;
+            for (elems) |elem| {
+                lookup.putAssumeCapacity(elem, idx);
+                idx += 1;
+            }
+            dict_lookup[dict_idx] = lookup;
 
             std.debug.assert(dict.byte_width > 0);
 
@@ -93,7 +103,7 @@ pub const Chunk = struct {
 
             for (table, 0..) |*array, field_idx| {
                 if (schema_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
-                    fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_arrays[dict_idx], array, alloc) };
+                    fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_lookup[dict_idx], array, alloc) };
                 } else {
                     fields[field_idx] = array.*;
                 }
