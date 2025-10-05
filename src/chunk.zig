@@ -57,27 +57,19 @@ pub const Chunk = struct {
                 num_elems += try dict_impl.count_array_to_dict(&tables[member.table_index][member.field_index]);
             }
 
-            var elems = std.StringHashMapUnmanaged(void){};
-            try elems.ensureTotalCapacity(scratch_alloc, @intCast(num_elems));
+            var elems = try scratch_alloc.alloc([]const u8, num_elems);
 
+            var write_idx: usize = 0;
             for (dict.members) |member| {
                 const array = &tables[member.table_index][member.field_index];
-                try dict_impl.push_array_to_dict(array, &elems);
+                write_idx = try dict_impl.push_array_to_dict(array, write_idx, elems);
             }
 
-            const keys = try scratch_alloc.alloc([]const u8, elems.size);
-            var key_it = elems.keyIterator();
-            var idx: usize = 0;
-            while (key_it.next()) |k| {
-                keys[idx] = k.*;
-                idx += 1;
-            }
-
-            std.mem.sortUnstable([]const u8, keys, {}, stringLessThan);
+            elems = dict_impl.sort_and_dedup(elems[0..write_idx]);
 
             std.debug.assert(dict.byte_width > 0);
 
-            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, keys, false, alloc) catch |e| {
+            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, elems, false, alloc) catch |e| {
                 switch (e) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidSliceLength => return error.DictElemInvalidLen,
@@ -120,7 +112,3 @@ pub const Chunk = struct {
         };
     }
 };
-
-fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {
-    return std.mem.order(u8, l, r) == .lt;
-}
