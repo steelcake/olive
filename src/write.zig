@@ -663,7 +663,7 @@ fn write_buffer_with_offsets(comptime I: type, params: Write, buffer: []const u8
         return empty_buffer();
     }
 
-    const max_p_size: u32 = if (params.page_size_kb) |ps| ps << 10 else std.math.maxInt(u32);
+    const max_p_size: u32 = if (params.page_size_kb) |ps| ps << 10 else 1 << 30;
     const max_page_size: I = @intCast(max_p_size);
 
     std.debug.assert(max_page_size > 0);
@@ -725,7 +725,7 @@ fn write_buffer(params: Write, buffer: []const u8, elem_size: u8, data_section_s
     if (buffer_len == 0) {
         return empty_buffer();
     }
-    const max_page_len: u32 = if (params.page_size_kb) |ps| ((ps << 10) + elem_size - 1) / elem_size else std.math.maxInt(u32);
+    const max_page_len: u32 = if (params.page_size_kb) |ps| ((ps << 10) + elem_size - 1) / elem_size else 1 << 30;
     std.debug.assert(max_page_len > 0);
 
     var compr: ?Compression = null;
