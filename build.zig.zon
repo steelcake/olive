@@ -1,6 +1,6 @@
 .{
     .name = .olive,
-    .version = "0.0.2",
+    .version = "0.0.3",
     .fingerprint = 0xaf0be4322c7292de, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0-dev.464+df1909900",
     .dependencies = .{
