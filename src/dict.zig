@@ -227,29 +227,6 @@ fn find_dict_elem_idx(dict: *const DictLookup, val: []const u8) ?u32 {
     return dict.get(val);
 }
 
-fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {
-    return std.mem.order(u8, l, r) == .lt;
-}
-
-/// Ascending sort elements and deduplicate
-pub fn sort_and_dedup(data: [][]const u8) [][]const u8 {
-    if (data.len == 0) {
-        return data;
-    }
-
-    std.mem.sortUnstable([]const u8, data, {}, stringLessThan);
-    var write_idx: usize = 0;
-
-    for (data[1..]) |s| {
-        if (!std.mem.eql(u8, s, data[write_idx])) {
-            write_idx += 1;
-            data[write_idx] = s;
-        }
-    }
-
-    return data[0 .. write_idx + 1];
-}
-
 pub fn count_array_to_dict(array: *const arr.Array) Error!usize {
     switch (array.*) {
         .binary => |*a| {
@@ -277,39 +254,44 @@ pub fn count_array_to_dict(array: *const arr.Array) Error!usize {
     }
 }
 
-pub fn push_array_to_dict(array: *const arr.Array, write_idx: usize, elems: [][]const u8) Error!usize {
+// u32 is to be used later in to pipeline, just write 0 here
+const DictBuilder = std.StringHashMapUnmanaged(u32);
+
+pub fn push_array_to_dict(array: *const arr.Array, elems: *DictBuilder) Error!void {
     switch (array.*) {
         .binary => |*a| {
-            return push_binary_to_dict(.i32, a, write_idx, elems);
+            push_binary_to_dict(.i32, a, elems);
         },
         .large_binary => |*a| {
-            return push_binary_to_dict(.i64, a, write_idx, elems);
+            push_binary_to_dict(.i64, a, elems);
         },
         .binary_view => |*a| {
-            return push_binary_view_to_dict(a, write_idx, elems);
+            push_binary_view_to_dict(a, elems);
         },
         .fixed_size_binary => |*a| {
-            return push_fixed_size_binary_to_dict(a, write_idx, elems);
+            push_fixed_size_binary_to_dict(a, elems);
         },
         .utf8 => |*a| {
-            return push_binary_to_dict(.i32, &a.inner, write_idx, elems);
+            push_binary_to_dict(.i32, &a.inner, elems);
         },
         .large_utf8 => |*a| {
-            return push_binary_to_dict(.i64, &a.inner, write_idx, elems);
+            push_binary_to_dict(.i64, &a.inner, elems);
         },
         .utf8_view => |*a| {
-            return push_binary_view_to_dict(&a.inner, write_idx, elems);
+            push_binary_view_to_dict(&a.inner, elems);
         },
         else => return Error.NonBinaryArrayWithDict,
     }
 }
 
-fn push_binary_to_dict(comptime index_t: arr.IndexType, array: *const arr.GenericBinaryArray(index_t), write_idx: usize, out: [][]const u8) usize {
+fn push_binary_to_dict(
+    comptime index_t: arr.IndexType,
+    array: *const arr.GenericBinaryArray(index_t),
+    out: *DictBuilder,
+) void {
     if (array.len == 0) {
-        return write_idx;
+        return;
     }
-
-    var wi = write_idx;
 
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
@@ -317,28 +299,25 @@ fn push_binary_to_dict(comptime index_t: arr.IndexType, array: *const arr.Generi
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
-                out[wi] = s;
-                wi += 1;
+                out.putAssumeCapacity(s, 0);
             }
         }
     } else {
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
-            out[wi] = s;
-            wi += 1;
+            out.putAssumeCapacity(s, 0);
         }
     }
-
-    return wi;
 }
 
-fn push_binary_view_to_dict(array: *const arr.BinaryViewArray, write_idx: usize, out: [][]const u8) usize {
+fn push_binary_view_to_dict(
+    array: *const arr.BinaryViewArray,
+    out: *DictBuilder,
+) void {
     if (array.len == 0) {
-        return write_idx;
+        return;
     }
-
-    var wi = write_idx;
 
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
@@ -346,28 +325,25 @@ fn push_binary_view_to_dict(array: *const arr.BinaryViewArray, write_idx: usize,
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                out[wi] = s;
-                wi += 1;
+                out.putAssumeCapacity(s, 0);
             }
         }
     } else {
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            out[wi] = s;
-            wi += 1;
+            out.putAssumeCapacity(s, 0);
         }
     }
-
-    return wi;
 }
 
-fn push_fixed_size_binary_to_dict(array: *const arr.FixedSizeBinaryArray, write_idx: usize, out: [][]const u8) usize {
+fn push_fixed_size_binary_to_dict(
+    array: *const arr.FixedSizeBinaryArray,
+    out: *DictBuilder,
+) void {
     if (array.len == 0) {
-        return write_idx;
+        return;
     }
-
-    var wi = write_idx;
 
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
@@ -375,18 +351,14 @@ fn push_fixed_size_binary_to_dict(array: *const arr.FixedSizeBinaryArray, write_
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
-                out[wi] = s;
-                wi += 1;
+                out.putAssumeCapacity(s, 0);
             }
         }
     } else {
         var item: u32 = array.offset;
         while (item < array.offset + array.len) : (item += 1) {
             const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
-            out[wi] = s;
-            wi += 1;
+            out.putAssumeCapacity(s, 0);
         }
     }
-
-    return wi;
 }

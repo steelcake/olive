@@ -58,28 +58,34 @@ pub const Chunk = struct {
                 num_elems += try dict_impl.count_array_to_dict(&tables[member.table_index][member.field_index]);
             }
 
-            var elems = try scratch_alloc.alloc([]const u8, num_elems);
+            var elems = std.StringHashMapUnmanaged(u32){};
+            try elems.ensureTotalCapacity(scratch_alloc, @intCast(num_elems));
 
-            var write_idx: usize = 0;
             for (dict.members) |member| {
                 const array = &tables[member.table_index][member.field_index];
-                write_idx = try dict_impl.push_array_to_dict(array, write_idx, elems);
+                try dict_impl.push_array_to_dict(array, &elems);
             }
 
-            elems = dict_impl.sort_and_dedup(elems[0..write_idx]);
-
-            var lookup = std.StringHashMapUnmanaged(u32){};
-            try lookup.ensureTotalCapacity(scratch_alloc, @intCast(elems.len));
+            const elems_list = try scratch_alloc.alloc([]const u8, elems.count());
+            var elems_it = elems.keyIterator();
             var idx: u32 = 0;
-            for (elems) |elem| {
-                lookup.putAssumeCapacity(elem, idx);
+            while (elems_it.next()) |key| {
+                elems_list[idx] = key.*;
                 idx += 1;
             }
-            dict_lookup[dict_idx] = lookup;
+
+            std.mem.sortUnstable([]const u8, elems_list, {}, stringLessThan);
+
+            idx = 0;
+            while (idx < elems_list.len) : (idx += 1) {
+                elems.putAssumeCapacity(elems_list[idx], idx);
+            }
+
+            dict_lookup[dict_idx] = elems;
 
             std.debug.assert(dict.byte_width > 0);
 
-            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, elems, false, alloc) catch |e| {
+            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, elems_list, false, alloc) catch |e| {
                 switch (e) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidSliceLength => return error.DictElemInvalidLen,
@@ -122,3 +128,7 @@ pub const Chunk = struct {
         };
     }
 };
+
+fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {
+    return std.mem.order(u8, l, r) == .lt;
+}

@@ -1,6 +1,6 @@
 .{
     .name = .olive,
-    .version = "0.0.6",
+    .version = "0.0.7",
     .fingerprint = 0xaf0be4322c7292de, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0-dev.464+df1909900",
     .dependencies = .{
@@ -17,8 +17,8 @@
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.25.tar.gz",
-            .hash = "arrow-0.0.25-ZFEaqCD2BgCWer-DYNm97p7Z7se0yL560AMUqyM8xjsg",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.27.tar.gz",
+            .hash = "arrow-0.0.27-ZFEaqAoUBwASyVZnwiF43oEzpe-WkDq-jitaldyGBBM4",
         },
         .borsh = .{
             .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.10.tar.gz",

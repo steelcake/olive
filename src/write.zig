@@ -213,7 +213,8 @@ fn normalize_dict_array_keys_impl(comptime T: type, base: T, offsets: []const T,
     const normalized = try scratch_alloc.alloc(T, offsets.len);
 
     for (0..offsets.len) |idx| {
-        normalized[idx] = offsets[idx] - base;
+        // allow overflow here since these might be garbage values (we don't check for nulls)
+        normalized[idx] = offsets[idx] -% base;
     }
 
     return normalized;
@@ -222,16 +223,19 @@ fn normalize_dict_array_keys_impl(comptime T: type, base: T, offsets: []const T,
 fn normalize_dict_array_keys(comptime T: type, base_key: arrow.scalar.Scalar, keys: *const arr.PrimitiveArray(T), scratch_alloc: Allocator) Error!arr.PrimitiveArray(T) {
     const base = @field(base_key, @typeName(T));
     const values = try normalize_dict_array_keys_impl(T, base, keys.values[keys.offset .. keys.offset + keys.len], scratch_alloc);
-
-    std.debug.assert(keys.null_count == 0);
     std.debug.assert(values.len == keys.len);
+
+    const validity = if (keys.null_count > 0)
+        try maybe_align_bitmap(keys.validity orelse unreachable, keys.offset, keys.len, scratch_alloc)
+    else
+        null;
 
     return arr.PrimitiveArray(T){
         .len = keys.len,
         .values = values,
         .offset = 0,
-        .validity = null,
-        .null_count = 0,
+        .validity = validity,
+        .null_count = keys.null_count,
     };
 }
 
@@ -286,10 +290,12 @@ fn write_dict_array(params: Write, array: *const arr.DictArray, data_section_siz
 }
 
 fn write_run_end_encoded_array(params: Write, array: *const arr.RunEndArray, data_section_size: *u32) Error!header.RunEndArray {
+    const normalized = try arrow.slice.normalize_run_end_encoded(array, 0, params.scratch_alloc);
+
     const run_ends = try params.header_alloc.create(header.Array);
-    run_ends.* = try write_array(params, &arrow.slice.slice(array.run_ends, array.offset, array.len), data_section_size, false);
+    run_ends.* = try write_array(params, normalized.run_ends, data_section_size, false);
     const values = try params.header_alloc.create(header.Array);
-    values.* = try write_array(params, &arrow.slice.slice(array.values, array.offset, array.len), data_section_size, false);
+    values.* = try write_array(params, normalized.values, data_section_size, false);
 
     return .{
         .run_ends = run_ends,
