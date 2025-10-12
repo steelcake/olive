@@ -135,6 +135,8 @@ pub const DictSchema = struct {
     /// length of each string in the dictionary, will be used for constructing arrow.FixedSizeBinaryArray
     byte_width: i32,
 
+    compression: Compression,
+
     pub fn eql(self: *const DictSchema, other: *const DictSchema) bool {
         if (self.members.len != other.members.len) {
             return false;

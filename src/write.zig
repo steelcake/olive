@@ -21,6 +21,21 @@ pub const Error = error{
     FilterConstructFail,
 };
 
+pub const ChunkCompression = struct {
+    tables: []const TableCompression,
+    dicts: []const Compression,
+};
+
+pub const TableCompression = struct {
+    fields: []const FieldCompression,
+};
+
+pub const FieldCompression = union(enum) {
+    flat: Compression,
+    fields: []const FieldCompression,
+    nested: *const FieldCompression,
+};
+
 pub const Write = struct {
     chunk: *const chunk.Chunk,
     /// Allocator that is used for allocating any dynamic memory relating to outputted header.
@@ -34,13 +49,14 @@ pub const Write = struct {
     data_section: []u8,
     /// Targeted page size in kilobytes
     page_size_kb: ?u32,
-    /// Compression to use for individual pages.
-    /// Compression will be disabled for buffers that don't compress enough to be worth it
-    compression: Compression,
+    compression: *const ChunkCompression,
 };
 
 pub fn write(params: Write) Error!header.Header {
     const sch = params.chunk.schema;
+
+    var compressor = try compression.Compressor.init(params.scratch_alloc);
+    defer compressor.deinit(params.scratch_alloc);
 
     var data_section_size: u32 = 0;
 
