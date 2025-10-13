@@ -71,7 +71,7 @@ pub fn write(params: struct {
         .scratch_alloc = params.scratch_alloc,
         .data_section = params.data_section,
         .data_section_size = &data_section_size,
-        .page_size_kb = params.page_size orelse 1 << 30,
+        .page_size = params.page_size orelse 1 << 30,
         .compressor = &compressor,
     };
 
@@ -112,10 +112,10 @@ pub fn write(params: struct {
     for (params.chunk.tables, params.compression.tables, 0..) |table, compr, table_idx| {
         const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
 
-        for (table.fields, 0..) |*array, field_idx| {
+        for (table.fields, compr.fields, 0..) |*array, c_algo, field_idx| {
             fields[field_idx] = try write_field(
                 ctx,
-                compr,
+                c_algo,
                 sch.tables[table_idx].has_minmax_index[field_idx],
                 array,
             );
@@ -1021,7 +1021,7 @@ fn write_binary_array(
     const normalized_offsets = try normalize_offsets(
         index_t.to_type(),
         params.array.offsets[params.array.offset .. params.array.offset + params.array.len + 1],
-        params.scratch_alloc,
+        params.ctx.scratch_alloc,
     );
     const offsets = try write_buffer(
         params.ctx,
@@ -1040,7 +1040,7 @@ fn write_binary_array(
 
     var minmax: ?[]const ?header.MinMax([]const u8) = null;
     if (params.has_minmax_index) {
-        const mm = try params.header_alloc.alloc(
+        const mm = try params.ctx.header_alloc.alloc(
             ?header.MinMax([]const u8),
             data.row_index_ends.len,
         );
@@ -1060,11 +1060,11 @@ fn write_binary_array(
             }
             const min = try copy_str(
                 arrow.minmax.minmax_binary(.min, index_t, &page_data) orelse unreachable,
-                params.header_alloc,
+                params.ctx.header_alloc,
             );
             const max = try copy_str(
                 arrow.minmax.minmax_binary(.max, index_t, &page_data) orelse unreachable,
-                params.header_alloc,
+                params.ctx.header_alloc,
             );
             mm[page_idx] = .{ .min = min, .max = max };
             page_start = page_end;
