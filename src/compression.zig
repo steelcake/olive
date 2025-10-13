@@ -26,7 +26,9 @@ pub const Compressor = struct {
 
     pub fn init(alloc: Allocator) error{OutOfMemory}!Compressor {
         const lz4hc_state = try alloc.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(8), @intCast(sys.LZ4_sizeofStateHC()));
-        const zstd_ctx = sys.ZSTD_createCCtx();
+        // can use _advanced function and pass customem to make zstd context use the zig allocator too
+        // using vanilla function to avoid complexity for now
+        const zstd_ctx = sys.ZSTD_createCCtx() orelse unreachable;
 
         return .{
             .lz4hc_state = lz4hc_state,
@@ -62,7 +64,7 @@ pub const Decompressor = struct {
     zstd_ctx: *sys.ZSTD_DCtx,
 
     pub fn init() Decompressor {
-        const zstd_ctx = sys.ZSTD_createDCtx();
+        const zstd_ctx = sys.ZSTD_createDCtx() orelse unreachable;
 
         return .{
             .zstd_ctx = zstd_ctx,
@@ -90,7 +92,11 @@ pub const Decompressor = struct {
 };
 
 pub fn compress_bound(input_size: usize) usize {
-    return @max(sys.ZSTD_compressBound(input_size), @as(usize, @intCast(sys.LZ4_compressBound(@intCast(input_size)))), input_size);
+    return @max(
+        sys.ZSTD_compressBound(input_size),
+        @as(usize, @intCast(sys.LZ4_compressBound(@intCast(input_size)))),
+        input_size,
+    );
 }
 
 fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
@@ -147,7 +153,7 @@ test "smoke compression" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var compressor = Compressor.init(alloc);
+    var compressor = try Compressor.init(alloc);
     defer compressor.deinit(alloc);
     var decompressor = Decompressor.init();
     defer decompressor.deinit();

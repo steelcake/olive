@@ -10,6 +10,13 @@ const GenericBinaryArray = arrow.array.GenericBinaryArray;
 
 const sys = @import("./compression.zig").sys;
 
+pub const RowCompression = union(enum) {
+    /// High compression variant of LZ4, very slow compression speed but same decompression speed as regular lz4.
+    lz4_hc: u8,
+    /// Default zstd block compression
+    zstd: u8,
+};
+
 pub fn compress(comptime index_t: IndexType, input: GenericBinaryArray(index_t), compression_level: u8, alloc: Allocator, scratch_alloc: Allocator) error{OutOfMemory}!StructArray {
     const I = index_t.to_type();
 
@@ -47,8 +54,8 @@ pub fn compress(comptime index_t: IndexType, input: GenericBinaryArray(index_t),
             out += 1;
         }) {
             if (arrow.get.get_binary_opt(input.data.ptr, input.offsets.ptr, v, idx)) |s| {
-                const c_len = compr.zstd.ZSTD_compress_usingCDict(c_ctx, out_buf.ptr, out_buf.len - out_offset, s.ptr, s.len, c_dict);
-                if (zstd.ZSTD_isError(c_len) != 0) {
+                const c_len = sys.ZSTD_compress_usingCDict(c_ctx, out_buf.ptr, out_buf.len - out_offset, s.ptr, s.len, c_dict);
+                if (sys.ZSTD_isError(c_len) != 0) {
                     @panic("failed to compress");
                 }
             } else {
