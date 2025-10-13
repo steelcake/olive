@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 const borsh = @import("borsh");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
-const Compression = @import("./compression.zig");
 
 /// Finds the dictionary the corresponds to given field (table_index/field_index)
 pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index: usize) ?usize {

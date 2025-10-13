@@ -11,6 +11,9 @@ const chunk_mod = @import("./chunk.zig");
 const schema_mod = @import("./schema.zig");
 const header_mod = @import("./header.zig");
 const compression_mod = @import("./compression.zig");
+const write = @import("./write.zig");
+
+const Compression = compression_mod.Compression;
 
 const Error = error{ OutOfMemory, ShortInput };
 
@@ -28,6 +31,137 @@ pub const FuzzInput = struct {
     pub fn init(input: []const u8) FuzzInput {
         return .{
             .inner = .{ .data = input },
+        };
+    }
+
+    pub fn make_chunk_compression(self: *FuzzInput, schema: *const schema_mod.Schema, alloc: Allocator) Error!*write.ChunkCompression {
+        const dicts = try alloc.alloc(Compression, schema.dicts.len);
+        const tables = try alloc.alloc(write.TableCompression, schema.tables.len);
+
+        for (dicts) |*d| {
+            d.* = try self.compression();
+        }
+
+        for (tables, schema.tables) |*t, sch| {
+            const fields = try alloc.alloc(write.FieldCompression, sch.field_names.len);
+
+            for (fields, sch.data_types) |*f, dt| {
+                f.* = try self.field_compression(dt, alloc);
+            }
+
+            t.* = write.TableCompression{
+                .fields = fields,
+            };
+        }
+
+        const out = try alloc.create(write.ChunkCompression);
+        out.* = write.ChunkCompression{
+            .dicts = dicts,
+            .tables = tables,
+        };
+
+        return out;
+    }
+
+    fn nested_compression(self: *FuzzInput, dt: data_type.DataType, alloc: Allocator) Error!write.FieldCompression {
+        const inner = try alloc.create(write.FieldCompression);
+        inner.* = try self.field_compression(dt, alloc);
+        return .{ .nested = inner };
+    }
+
+    fn fields_compression(self: *FuzzInput, field_types: []const data_type.DataType, alloc: Allocator) Error!write.FieldCompression {
+        const fields = try alloc.alloc(write.FieldCompression, field_types.len);
+        for (fields, field_types) |*f, ft| {
+            f.* = try self.field_compression(ft, alloc);
+        }
+
+        return .{ .fields = fields };
+    }
+
+    fn field_compression(self: *FuzzInput, dt: data_type.DataType, alloc: Allocator) Error!write.FieldCompression {
+        switch (dt) {
+            .null,
+            .i8,
+            .i16,
+            .i32,
+            .i64,
+            .u8,
+            .u16,
+            .u32,
+            .u64,
+            .f16,
+            .f32,
+            .f64,
+            .binary,
+            .utf8,
+            .bool,
+            .date32,
+            .date64,
+            .interval_year_month,
+            .interval_day_time,
+            .interval_month_day_nano,
+            .fixed_size_binary,
+            .large_binary,
+            .large_utf8,
+            .binary_view,
+            .utf8_view,
+            .decimal32,
+            .decimal64,
+            .decimal128,
+            .decimal256,
+            .time32,
+            .time64,
+            .timestamp,
+            .duration,
+            => return .{ .flat = try self.compression() },
+            .list => |x| {
+                return try self.nested_compression(x.*, alloc);
+            },
+            .fixed_size_list => |x| {
+                return try self.nested_compression(x.inner, alloc);
+            },
+            .large_list => |x| {
+                return try self.nested_compression(x.*, alloc);
+            },
+            .list_view => |x| {
+                return try self.nested_compression(x.*, alloc);
+            },
+            .large_list_view => |x| {
+                return try self.nested_compression(x.*, alloc);
+            },
+            .struct_ => |st| {
+                return try self.fields_compression(st.field_types, alloc);
+            },
+            .dense_union => |st| {
+                return try self.fields_compression(st.field_types, alloc);
+            },
+            .sparse_union => |st| {
+                return try self.fields_compression(st.field_types, alloc);
+            },
+            .map => |mt| {
+                const fields = try alloc.alloc(write.FieldCompression, 2);
+                fields[0] = try self.field_compression(mt.key.to_data_type(), alloc);
+                fields[1] = try self.field_compression(mt.value, alloc);
+                return .{ .fields = fields };
+            },
+            .run_end_encoded => |reet| {
+                return try self.nested_compression(reet.value, alloc);
+            },
+            .dict => |dict_t| {
+                return try self.nested_compression(dict_t.value, alloc);
+            },
+        }
+    }
+
+    fn compression(self: *FuzzInput) Error!Compression {
+        const v = try self.inner.int(u8);
+
+        return switch (v % 4) {
+            0 => .no_compression,
+            1 => .lz4,
+            2 => .{ .zstd = -2 },
+            3 => .{ .lz4_hc = 1 },
+            else => unreachable,
         };
     }
 
@@ -636,20 +770,14 @@ pub const FuzzInput = struct {
             };
         }
 
-        const compression = switch ((try self.inner.int(u8)) % 4) {
-            0 => compression_mod.Compression{ .zstd = try self.inner.int(u8) },
-            1 => compression_mod.Compression{ .lz4_hc = try self.inner.int(u8) },
-            2 => compression_mod.Compression{ .lz4 = {} },
-            3 => compression_mod.Compression{ .no_compression = {} },
-            else => unreachable,
-        };
+        const compr = try self.compression();
 
         const num_row_index_ends = try self.inner.int(u8);
         const row_index_ends = try self.inner.slice(u32, num_row_index_ends, alloc);
 
         return header_mod.Buffer{
             .pages = pages,
-            .compression = compression,
+            .compression = compr,
             .row_index_ends = row_index_ends,
         };
     }

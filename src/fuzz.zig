@@ -142,8 +142,8 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
     defer filter_arena.deinit();
     const filter_alloc = filter_arena.allocator();
 
-    // max should be 16 MB since the number is in KB and min should be 1 KB
-    const page_size_kb = (try input.inner.int(u32)) % (1 << 14) + 1;
+    // min 1KB max 1 GB
+    const page_size = ((try input.inner.int(u32)) % (1 << 30)) + (1 << 10);
 
     const data_section = StaticBufs.get_data_section();
 
@@ -154,12 +154,12 @@ fn fuzz_roundtrip(data: []const u8, alloc: Allocator) !void {
 
         break :write try olive.write.write(.{
             .chunk = &chunk,
-            .compression = .lz4,
+            .compression = try input.make_chunk_compression(chunk.schema, chunk_alloc),
             .header_alloc = header_alloc,
             .filter_alloc = filter_alloc,
             .scratch_alloc = scratch_alloc,
             .data_section = data_section,
-            .page_size_kb = page_size_kb,
+            .page_size = page_size,
         });
     };
 
