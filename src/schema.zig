@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 const borsh = @import("borsh");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
-const Compression = @import("./compression.zig");
 
 /// Finds the dictionary the corresponds to given field (table_index/field_index)
 pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index: usize) ?usize {
@@ -134,8 +133,6 @@ pub const DictSchema = struct {
     has_filter: bool,
     /// length of each string in the dictionary, will be used for constructing arrow.FixedSizeBinaryArray
     byte_width: i32,
-
-    compression: Compression,
 
     pub fn eql(self: *const DictSchema, other: *const DictSchema) bool {
         if (self.members.len != other.members.len) {

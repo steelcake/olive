@@ -35,7 +35,16 @@ pub const FieldCompression = union(enum) {
     nested: *const FieldCompression,
 };
 
-pub const Write = struct {
+const Context = struct {
+    header_alloc: Allocator,
+    scratch_alloc: Allocator,
+    data_section: []u8,
+    data_section_size: *u32,
+    page_size: u32,
+    compressor: *Compressor,
+};
+
+pub fn write(params: struct {
     chunk: *const chunk.Chunk,
     /// Allocator that is used for allocating any dynamic memory relating to outputted header.
     /// Lifetime of the header is tied to this allocator after creation.
@@ -49,18 +58,7 @@ pub const Write = struct {
     /// Targeted page size in kilobytes
     page_size: ?u32,
     compression: *const ChunkCompression,
-};
-
-const Context = struct {
-    header_alloc: Allocator,
-    scratch_alloc: Allocator,
-    data_section: []u8,
-    data_section_size: *u32,
-    page_size: u32,
-    compressor: *Compressor,
-};
-
-pub fn write(params: Write) Error!header.Header {
+}) Error!header.Header {
     const sch = params.chunk.schema;
 
     var compressor = try compression.Compressor.init(params.scratch_alloc);
