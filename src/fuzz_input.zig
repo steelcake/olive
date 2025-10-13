@@ -34,7 +34,7 @@ pub const FuzzInput = struct {
         };
     }
 
-    pub fn make_chunk_compression(self: *FuzzInput, schema: *const schema_mod.Schema, alloc: Allocator) Error!write.ChunkCompression {
+    pub fn make_chunk_compression(self: *FuzzInput, schema: *const schema_mod.Schema, alloc: Allocator) Error!*write.ChunkCompression {
         const dicts = try alloc.alloc(Compression, schema.dicts.len);
         const tables = try alloc.alloc(write.TableCompression, schema.tables.len);
 
@@ -53,6 +53,14 @@ pub const FuzzInput = struct {
                 .fields = fields,
             };
         }
+
+        const out = try alloc.create(write.ChunkCompression);
+        out.* = write.ChunkCompression{
+            .dicts = dicts,
+            .tables = tables,
+        };
+
+        return out;
     }
 
     fn nested_compression(self: *FuzzInput, dt: data_type.DataType, alloc: Allocator) Error!write.FieldCompression {
@@ -70,7 +78,7 @@ pub const FuzzInput = struct {
         return .{ .fields = fields };
     }
 
-    fn field_compression(self: *FuzzInput, dt: data_type.DataType, alloc: Allocator) Error!Compression {
+    fn field_compression(self: *FuzzInput, dt: data_type.DataType, alloc: Allocator) Error!write.FieldCompression {
         switch (dt) {
             .null,
             .i8,
@@ -110,7 +118,7 @@ pub const FuzzInput = struct {
                 return try self.nested_compression(x.*, alloc);
             },
             .fixed_size_list => |x| {
-                return try self.nested_compression(x.*, alloc);
+                return try self.nested_compression(x.inner, alloc);
             },
             .large_list => |x| {
                 return try self.nested_compression(x.*, alloc);
@@ -131,18 +139,16 @@ pub const FuzzInput = struct {
                 return try self.fields_compression(st.field_types, alloc);
             },
             .map => |mt| {
-                return .{
-                    .fields = &.{
-                        try self.field_compression(mt.key.to_data_type(), alloc),
-                        try self.field_compression(mt.value, alloc),
-                    },
-                };
+                const fields = try alloc.alloc(write.FieldCompression, 2);
+                fields[0] = try self.field_compression(mt.key.to_data_type(), alloc);
+                fields[1] = try self.field_compression(mt.value, alloc);
+                return .{ .fields = fields };
             },
             .run_end_encoded => |reet| {
-                return try self.field_compression(reet.value, alloc);
+                return try self.nested_compression(reet.value, alloc);
             },
             .dict => |dict_t| {
-                return try self.field_compression(dict_t.value, alloc);
+                return try self.nested_compression(dict_t.value, alloc);
             },
         }
     }

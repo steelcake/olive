@@ -75,6 +75,8 @@ pub fn write(params: struct {
         .compressor = &compressor,
     };
 
+    std.debug.assert(ctx.page_size > 0);
+
     const dicts = try params.header_alloc.alloc(header.Dict, params.chunk.dicts.len);
 
     for (params.chunk.dicts, sch.dicts, params.compression.dicts, 0..) |*dict, dict_schema, compr, dict_idx| {
