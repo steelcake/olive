@@ -17,7 +17,7 @@ pub const Compression = union(enum) {
     /// High compression variant of LZ4, very slow compression speed but same decompression speed as regular lz4.
     lz4_hc: u8,
     /// Default zstd block compression
-    zstd: u8,
+    zstd: i32,
 };
 
 pub const Compressor = struct {
@@ -108,7 +108,7 @@ fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
     }
 }
 
-fn zstd_compress(ctx: *sys.ZSTD_CCtx, src: []const u8, dst: []u8, level: u8) CompressError!usize {
+fn zstd_compress(ctx: *sys.ZSTD_CCtx, src: []const u8, dst: []u8, level: i32) CompressError!usize {
     const res = sys.ZSTD_compressCCtx(ctx, dst.ptr, dst.len, src.ptr, src.len, level);
     if (sys.ZSTD_isError(res) == 0) {
         return res;

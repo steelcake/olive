@@ -159,7 +159,7 @@ pub const FuzzInput = struct {
         return switch (v % 4) {
             0 => .no_compression,
             1 => .lz4,
-            2 => .{ .zstd = 1 },
+            2 => .{ .zstd = -2 },
             3 => .{ .lz4_hc = 1 },
             else => unreachable,
         };
