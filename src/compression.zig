@@ -2,21 +2,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const arrow = @import("arrow");
-const arr = arrow.array;
-
 const sys = @cImport({
     @cInclude("zstd.h");
     @cInclude("zdict.h");
     @cInclude("lz4.h");
     @cInclude("lz4hc.h");
 });
-
-// Define it here since cImport fails with:
-// error: overflow of integer type 'c_ulonglong' with value '-1'
-// pub const ZSTD_CONTENTSIZE_UNKNOWN = @as(c_ulonglong, 0) - @as(c_int, 1);
-const ZSTD_CONTENTSIZE_UNKNOWN = std.math.maxInt(c_ulonglong);
-const ZSTD_CONTENTSIZE_ERROR = std.math.maxInt(c_ulonglong) - 1;
 
 pub const Compression = union(enum) {
     /// Memcopy
@@ -27,13 +18,6 @@ pub const Compression = union(enum) {
     lz4_hc: u8,
     /// Default zstd block compression
     zstd: i32,
-};
-
-pub const RowCompressionError = error{
-    NonBinaryArray,
-    CompressFail,
-    DecompressFail,
-    OutOfMemory,
 };
 
 pub const Compressor = struct {
@@ -78,71 +62,6 @@ pub const Compressor = struct {
             },
         }
     }
-
-    pub fn row_compress(
-        self: *Compressor,
-        array: *const arr.Array,
-        alloc: Allocator,
-    ) RowCompressionError!arr.Array {
-        return switch (array.*) {
-            .binary => |*a| .{ .binary = try self.row_compress_binary(.i32, a, alloc) },
-            .large_binary => |*a| .{ .large_binary = try self.row_compress_binary(.i64, a, alloc) },
-            else => return RowCompressionError.NonBinaryArray,
-        };
-    }
-
-    pub fn row_compress_binary(
-        self: *Compressor,
-        comptime index_t: arr.IndexType,
-        array: *const arr.GenericBinaryArray(index_t),
-        alloc: Allocator,
-    ) RowCompressionError!arr.GenericBinaryArray(index_t) {
-        std.debug.assert(array.null_count == 0);
-
-        const I = index_t.to_type();
-
-        var data_size: usize = 0;
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const start = array.offsets[idx];
-            const end = array.offsets[idx + 1];
-            const size = end - start;
-            data_size += sys.ZSTD_compressBound(@intCast(size));
-        }
-
-        std.debug.assert(@as(usize, @intCast(std.math.maxInt(I))) >= data_size);
-
-        const data = try alloc.alloc(u8, data_size);
-        const offsets = try alloc.alloc(I, array.len + 1);
-        offsets[0] = 0;
-
-        idx = array.offset;
-        var out_idx: u32 = 0;
-        var out_offset: usize = 0;
-        while (idx < array.offset + array.len) : ({
-            idx += 1;
-            out_idx += 1;
-        }) {
-            const start: usize = @intCast(array.offsets.ptr[idx]);
-            const end: usize = @intCast(array.offsets.ptr[idx + 1]);
-            const input = array.data.ptr[start..end];
-
-            const out = data[out_offset..];
-
-            out_offset += zstd_compress(self.zstd_ctx, input, out, 1) catch unreachable;
-
-            offsets[out_idx + 1] = @intCast(out_offset);
-        }
-
-        return arr.GenericBinaryArray(index_t){
-            .data = data,
-            .offsets = offsets,
-            .len = array.len,
-            .offset = 0,
-            .validity = null,
-            .null_count = 0,
-        };
-    }
 };
 
 pub const Decompressor = struct {
@@ -173,79 +92,6 @@ pub const Decompressor = struct {
                 try zstd_decompress(self.zstd_ctx, src, dst);
             },
         }
-    }
-
-    pub fn row_decompress(
-        self: *Decompressor,
-        array: *const arr.Array,
-        alloc: Allocator,
-    ) RowCompressionError!arr.Array {
-        return switch (array.*) {
-            .binary => |*a| .{ .binary = try self.row_decompress_binary(.i32, a, alloc) },
-            .large_binary => |*a| .{ .large_binary = try self.row_decompress_binary(.i64, a, alloc) },
-            else => return RowCompressionError.NonBinaryArray,
-        };
-    }
-
-    pub fn row_decompress_binary(
-        self: *Decompressor,
-        comptime index_t: arr.IndexType,
-        array: *const arr.GenericBinaryArray(index_t),
-        alloc: Allocator,
-    ) RowCompressionError!arr.GenericBinaryArray(index_t) {
-        std.debug.assert(array.null_count == 0);
-
-        const I = index_t.to_type();
-
-        var data_size: usize = 0;
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const start: usize = @intCast(array.offsets.ptr[idx]);
-            const end: usize = @intCast(array.offsets.ptr[idx + 1]);
-            const ret = sys.ZSTD_getFrameContentSize(array.data.ptr[start..], end - start);
-            if (ret == ZSTD_CONTENTSIZE_UNKNOWN) {
-                return error.DecompressFail;
-            }
-            if (ret == ZSTD_CONTENTSIZE_ERROR) {
-                return error.DecompressFail;
-            }
-            if (@as(u128, data_size) + @as(u128, ret) >= std.math.maxInt(I)) {
-                return error.DecompressFail;
-            }
-            data_size += @intCast(ret);
-        }
-
-        const data = try alloc.alloc(u8, data_size);
-        const offsets = try alloc.alloc(I, array.len + 1);
-        offsets[0] = 0;
-
-        idx = array.offset;
-        var out_idx: u32 = 0;
-        var out_offset: usize = 0;
-        while (idx < array.offset + array.len) : ({
-            idx += 1;
-            out_idx += 1;
-        }) {
-            const start: usize = @intCast(array.offsets.ptr[idx]);
-            const end: usize = @intCast(array.offsets.ptr[idx + 1]);
-            const dst_size: usize = @intCast(sys.ZSTD_getFrameContentSize(array.data.ptr[start..], end - start));
-            try zstd_decompress(
-                self.zstd_ctx,
-                array.data.ptr[start..end],
-                data.ptr[out_offset .. out_offset + dst_size],
-            );
-            out_offset += dst_size;
-            offsets[out_idx + 1] = @intCast(out_offset);
-        }
-
-        return arr.GenericBinaryArray(index_t){
-            .len = array.len,
-            .offset = 0,
-            .data = data,
-            .offsets = offsets,
-            .validity = null,
-            .null_count = 0,
-        };
     }
 };
 

@@ -20,13 +20,6 @@ pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index:
     return null;
 }
 
-pub fn can_be_row_compressed(data_type: DataType) bool {
-    return switch (data_type) {
-        .binary, .large_binary => true,
-        else => false,
-    };
-}
-
 pub fn can_have_minmax_index(data_type: DataType) bool {
     return switch (data_type) {
         .i8,
@@ -91,8 +84,6 @@ pub const TableSchema = struct {
     data_types: []const DataType,
     /// Minmax index is only supported for primitive and binary types
     has_minmax_index: []const bool,
-    /// Whether row compression is applied to this field. Only walid for Binary fields
-    is_row_compressed: []const bool,
 
     pub fn eql(self: *const TableSchema, other: *const TableSchema) bool {
         if (self.field_names.len != other.field_names.len) {
@@ -133,15 +124,8 @@ pub const TableSchema = struct {
         if (self.field_names.len != self.has_minmax_index.len) {
             return Error.Invalid;
         }
-        if (self.field_names.len != self.is_row_compressed.len) {
-            return Error.Invalid;
-        }
-        for (self.data_types, self.has_minmax_index, self.is_row_compressed) |dt, has_mm, is_rc| {
+        for (self.data_types, self.has_minmax_index) |dt, has_mm| {
             if (has_mm and !can_have_minmax_index(dt)) {
-                return Error.Invalid;
-            }
-
-            if (is_rc and !can_be_row_compressed(dt)) {
                 return Error.Invalid;
             }
         }
@@ -162,24 +146,6 @@ pub const TableSchema = struct {
         for (self.data_types, table) |*sdt, *dfv| {
             if (!arrow.data_type.check_data_type(dfv, sdt)) {
                 return Error.Invalid;
-            }
-        }
-
-        for (self.is_row_compressed, table) |is_rc, *field| {
-            if (is_rc) {
-                switch (field.*) {
-                    .binary => |*a| {
-                        if (a.null_count > 0) {
-                            return Error.Invalid;
-                        }
-                    },
-                    .large_binary => |*a| {
-                        if (a.null_count > 0) {
-                            return Error.Invalid;
-                        }
-                    },
-                    else => return Error.Invalid,
-                }
             }
         }
     }
@@ -308,11 +274,6 @@ pub const Schema = struct {
 
                 const dt = self.tables[member.table_index].data_types[member.field_index];
                 if (!can_be_dict_member(dt)) {
-                    return Error.Invalid;
-                }
-
-                // Can't be row compressed if in a dictionary
-                if (self.tables[member.table_index].is_row_compressed[member.field_index]) {
                     return Error.Invalid;
                 }
 

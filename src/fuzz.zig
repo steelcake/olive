@@ -5,58 +5,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const olive = @import("olive");
 const arrow = @import("arrow");
-const compression = olive.compression;
-
-/// reverses the position of the two halves of the array, doesn't really reverse it elementwise
-fn reverse_array(array: *const arrow.array.Array, alloc: Allocator) !arrow.array.Array {
-    const len = arrow.length.length(array);
-
-    const left = arrow.slice.slice(array, 0, len / 2);
-    const right = arrow.slice.slice(array, len / 2, len - (len / 2));
-
-    const list: [2]arrow.array.Array = .{ right, left };
-
-    return try arrow.concat.concat(
-        try arrow.data_type.get_data_type(array, alloc),
-        &list,
-        alloc,
-        alloc,
-    );
-}
-
-fn fuzz_row_compression(data: []const u8, gpa: Allocator) !void {
-    var arena = ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var input = olive.fuzz_input.FuzzInput.init(data);
-
-    const len: u32 = try input.inner.int(u16);
-
-    const array = if (try input.inner.boolean())
-        arrow.array.Array{ .binary = try input.binary_array_without_validity(.i32, len, alloc) }
-    else
-        arrow.array.Array{ .large_binary = try input.binary_array_without_validity(.i64, len, alloc) };
-
-    const reversed = try reverse_array(&array, alloc);
-
-    var compressor = try compression.Compressor.init(alloc);
-    defer compressor.deinit(alloc);
-
-    var decompressor = compression.Decompressor.init();
-    defer decompressor.deinit();
-
-    const compressed = try compressor.row_compress(&array, alloc);
-    const reversed_compressed = try reverse_array(&compressed, alloc);
-
-    const reversed_decompressed = try decompressor.row_decompress(&reversed_compressed, alloc);
-
-    arrow.equals.equals(&reversed, &reversed_decompressed);
-}
-
-test "fuzz row compression" {
-    try FuzzWrap(fuzz_row_compression, 1 << 25).run();
-}
 
 fn fuzz_schema_de(data: []const u8, gpa: Allocator) !void {
     var arena = ArenaAllocator.init(gpa);
