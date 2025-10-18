@@ -4,7 +4,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const sys = @cImport({
     @cInclude("zstd.h");
-    @cInclude("zdict.h");
     @cInclude("lz4.h");
     @cInclude("lz4hc.h");
 });
