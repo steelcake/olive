@@ -5,6 +5,8 @@ const borsh = @import("borsh");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
 
+const Compression = @import("./compression.zig").Compression;
+
 /// Finds the dictionary the corresponds to given field (table_index/field_index)
 pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index: usize) ?usize {
     for (dicts, 0..) |dict, dict_idx| {
@@ -18,16 +20,52 @@ pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index:
     return null;
 }
 
+pub fn can_be_row_compressed(data_type: DataType) bool {
+    return switch (data_type) {
+        .binary, .large_binary => true,
+        else => false,
+    };
+}
+
 pub fn can_have_minmax_index(data_type: DataType) bool {
     return switch (data_type) {
-        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f16, .f32, .f64, .binary, .utf8, .decimal32, .decimal64, .decimal128, .decimal256, .large_binary, .large_utf8, .binary_view, .utf8_view, .fixed_size_binary => true,
+        .i8,
+        .i16,
+        .i32,
+        .i64,
+        .u8,
+        .u16,
+        .u32,
+        .u64,
+        .f16,
+        .f32,
+        .f64,
+        .binary,
+        .utf8,
+        .decimal32,
+        .decimal64,
+        .decimal128,
+        .decimal256,
+        .large_binary,
+        .large_utf8,
+        .binary_view,
+        .utf8_view,
+        .fixed_size_binary,
+        => true,
         else => false,
     };
 }
 
 pub fn can_be_dict_member(data_type: DataType) bool {
     return switch (data_type) {
-        .binary, .large_binary, .fixed_size_binary, .utf8, .large_utf8, .utf8_view, .binary_view => true,
+        .binary,
+        .large_binary,
+        .fixed_size_binary,
+        .utf8,
+        .large_utf8,
+        .utf8_view,
+        .binary_view,
+        => true,
         else => false,
     };
 }
@@ -53,6 +91,8 @@ pub const TableSchema = struct {
     data_types: []const DataType,
     /// Minmax index is only supported for primitive and binary types
     has_minmax_index: []const bool,
+    /// Whether row compression is applied to this field. Only walid for Binary fields
+    is_row_compressed: []const bool,
 
     pub fn eql(self: *const TableSchema, other: *const TableSchema) bool {
         if (self.field_names.len != other.field_names.len) {
@@ -93,8 +133,15 @@ pub const TableSchema = struct {
         if (self.field_names.len != self.has_minmax_index.len) {
             return Error.Invalid;
         }
-        for (self.data_types, self.has_minmax_index) |dt, has_mm| {
+        if (self.field_names.len != self.is_row_compressed.len) {
+            return Error.Invalid;
+        }
+        for (self.data_types, self.has_minmax_index, self.is_row_compressed) |dt, has_mm, is_rc| {
             if (has_mm and !can_have_minmax_index(dt)) {
+                return Error.Invalid;
+            }
+
+            if (is_rc and !can_be_row_compressed(dt)) {
                 return Error.Invalid;
             }
         }
@@ -115,6 +162,24 @@ pub const TableSchema = struct {
         for (self.data_types, table) |*sdt, *dfv| {
             if (!arrow.data_type.check_data_type(dfv, sdt)) {
                 return Error.Invalid;
+            }
+        }
+
+        for (self.is_row_compressed, table) |is_rc, *field| {
+            if (is_rc) {
+                switch (field.*) {
+                    .binary => |*a| {
+                        if (a.null_count > 0) {
+                            return Error.Invalid;
+                        }
+                    },
+                    .large_binary => |*a| {
+                        if (a.null_count > 0) {
+                            return Error.Invalid;
+                        }
+                    },
+                    else => return Error.Invalid,
+                }
             }
         }
     }
@@ -241,11 +306,21 @@ pub const Schema = struct {
                     return Error.Invalid;
                 }
 
-                if (!can_be_dict_member(self.tables[member.table_index].data_types[member.field_index])) {
+                const dt = self.tables[member.table_index].data_types[member.field_index];
+                if (!can_be_dict_member(dt)) {
                     return Error.Invalid;
                 }
 
-                const dict_idx_of_member = find_dict_idx(self.dicts, member.table_index, member.field_index) orelse unreachable;
+                // Can't be row compressed if in a dictionary
+                if (self.tables[member.table_index].is_row_compressed[member.field_index]) {
+                    return Error.Invalid;
+                }
+
+                const dict_idx_of_member = find_dict_idx(
+                    self.dicts,
+                    member.table_index,
+                    member.field_index,
+                ) orelse unreachable;
                 if (dict_idx_of_member != dict_idx) {
                     // Multiple dicts have the same member
                     return Error.Invalid;

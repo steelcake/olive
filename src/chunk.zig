@@ -7,11 +7,19 @@ const arr = arrow.array;
 const schema_impl = @import("./schema.zig");
 const Schema = schema_impl.Schema;
 const dict_impl = @import("./dict.zig");
+const compression = @import("./compression.zig");
+const Compression = compression.Compression;
+const Compressor = compression.Compressor;
+const Decompressor = compression.Decompressor;
+const RowCompressionError = compression.RowCompressionError;
 
 const Error = error{
     OutOfMemory,
     NonBinaryArrayWithDict,
+    NonBinaryArrayRowCompressed,
     DictElemInvalidLen,
+    CompressFail,
+    DecompressFail,
 };
 
 pub const Table = struct {
@@ -27,12 +35,29 @@ pub const Chunk = struct {
     pub fn to_arrow(self: *const Chunk, alloc: Allocator) Error![]const []const arr.Array {
         const out = try alloc.alloc([]const arr.Array, self.tables.len);
 
+        var decompressor = compression.Decompressor.init();
+        defer decompressor.deinit();
+
         for (self.tables, 0..) |table, table_idx| {
             const fields = try alloc.alloc(arr.Array, table.fields.len);
 
             for (table.fields, 0..) |*field, field_idx| {
-                if (schema_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
-                    fields[field_idx] = try dict_impl.unpack_dict(&self.dicts[dict_idx], &field.u32, self.schema.tables[table_idx].data_types[field_idx], alloc);
+                if (self.schema.tables[table_idx].is_row_compressed[field_idx]) {
+                    fields[field_idx] = decompressor.row_decompress(field, alloc) catch |e| {
+                        switch (e) {
+                            RowCompressionError.OutOfMemory => return Error.OutOfMemory,
+                            RowCompressionError.CompressFail => unreachable,
+                            RowCompressionError.DecompressFail => return Error.DecompressFail,
+                            RowCompressionError.NonBinaryArray => return Error.NonBinaryArrayRowCompressed,
+                        }
+                    };
+                } else if (schema_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
+                    fields[field_idx] = try dict_impl.unpack_dict(
+                        &self.dicts[dict_idx],
+                        &field.u32,
+                        self.schema.tables[table_idx].data_types[field_idx],
+                        alloc,
+                    );
                 } else {
                     fields[field_idx] = field.*;
                 }
@@ -44,12 +69,20 @@ pub const Chunk = struct {
         return out;
     }
 
-    pub fn from_arrow(schema: *const Schema, tables: []const []const arr.Array, alloc: Allocator, scratch_alloc: Allocator) Error!Chunk {
+    pub fn from_arrow(
+        schema: *const Schema,
+        tables: []const []const arr.Array,
+        alloc: Allocator,
+        scratch_alloc: Allocator,
+    ) Error!Chunk {
         const out = try alloc.alloc(Table, tables.len);
 
         const num_dicts = schema.dicts.len;
         const dict_arrays = try alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
         const dict_lookup = try scratch_alloc.alloc(std.StringHashMapUnmanaged(u32), num_dicts);
+
+        var compressor = try Compressor.init(scratch_alloc);
+        defer compressor.deinit(scratch_alloc);
 
         for (schema.dicts, 0..) |dict, dict_idx| {
             var num_elems: usize = 0;
@@ -85,7 +118,12 @@ pub const Chunk = struct {
 
             std.debug.assert(dict.byte_width > 0);
 
-            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(dict.byte_width, elems_list, false, alloc) catch |e| {
+            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(
+                dict.byte_width,
+                elems_list,
+                false,
+                alloc,
+            ) catch |e| {
                 switch (e) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidSliceLength => return error.DictElemInvalidLen,
@@ -108,7 +146,16 @@ pub const Chunk = struct {
             const fields = try alloc.alloc(arr.Array, table.len);
 
             for (table, 0..) |*array, field_idx| {
-                if (schema_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
+                if (schema.tables[table_idx].is_row_compressed[field_idx]) {
+                    fields[field_idx] = compressor.row_compress(array, alloc) catch |e| {
+                        switch (e) {
+                            RowCompressionError.OutOfMemory => return Error.OutOfMemory,
+                            RowCompressionError.CompressFail => return Error.CompressFail,
+                            RowCompressionError.DecompressFail => unreachable,
+                            RowCompressionError.NonBinaryArray => return Error.NonBinaryArrayRowCompressed,
+                        }
+                    };
+                } else if (schema_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
                     fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_lookup[dict_idx], array, alloc) };
                 } else {
                     fields[field_idx] = array.*;

@@ -34,6 +34,21 @@ pub const FuzzInput = struct {
         };
     }
 
+    pub fn binary_array_without_validity(self: *FuzzInput, comptime index_t: arr.IndexType, len: u32, alloc: Allocator) Error!arr.GenericBinaryArray(index_t) {
+        const array = try self.inner.binary_array(index_t, len, alloc);
+        if (array.null_count > 0) {
+            return arr.GenericBinaryArray(index_t){
+                .null_count = 0,
+                .validity = null,
+                .len = array.len,
+                .offset = array.offset,
+                .offsets = array.offsets,
+                .data = array.data,
+            };
+        }
+        return array;
+    }
+
     pub fn make_chunk_compression(self: *FuzzInput, schema: *const schema_mod.Schema, alloc: Allocator) Error!*write.ChunkCompression {
         const dicts = try alloc.alloc(Compression, schema.dicts.len);
         const tables = try alloc.alloc(write.TableCompression, schema.tables.len);
@@ -270,10 +285,14 @@ pub const FuzzInput = struct {
 
             table_names[table_idx] = try make_name(table_names[0..table_idx], rand, alloc);
 
+            const is_row_compressed = try alloc.alloc(bool, num_fields);
+            @memset(is_row_compressed, false);
+
             table_schemas[table_idx] = schema_mod.TableSchema{
                 .has_minmax_index = has_minmax_index,
                 .data_types = data_types,
                 .field_names = field_names,
+                .is_row_compressed = is_row_compressed,
             };
         }
 
@@ -374,6 +393,9 @@ pub const FuzzInput = struct {
             const data_types = try alloc.alloc(data_type.DataType, num_fields);
             const field_names = try alloc.alloc([:0]const u8, num_fields);
 
+            const is_row_compressed = try alloc.alloc(bool, num_fields);
+            @memset(is_row_compressed, false);
+
             for (0..num_fields) |field_idx| {
                 const dt = if (schema_mod.find_dict_idx(dict_schemas, table_idx, field_idx) == null)
                     try self.inner.make_data_type(alloc)
@@ -393,6 +415,7 @@ pub const FuzzInput = struct {
                 .has_minmax_index = has_minmax_index,
                 .data_types = data_types,
                 .field_names = field_names,
+                .is_row_compressed = is_row_compressed,
             };
         }
 
