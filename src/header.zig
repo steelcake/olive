@@ -170,14 +170,8 @@ pub const MapArray = struct {
     keys_are_sorted: bool,
 };
 
-pub const RowCompression = struct {
-    dict: Buffer,
-    offsets: Buffer,
-};
-
 pub const Table = struct {
     fields: []const Array,
-    row_compression: []const ?RowCompression,
     num_rows: u32,
 };
 
