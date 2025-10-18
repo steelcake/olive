@@ -25,9 +25,13 @@ pub const Compressor = struct {
     lz4hc_state: []align(8) u8,
 
     pub fn init(alloc: Allocator) error{OutOfMemory}!Compressor {
-        const lz4hc_state = try alloc.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(8), @intCast(sys.LZ4_sizeofStateHC()));
-        // can use _advanced function and pass customem to make zstd context use the zig allocator too
-        // using vanilla function to avoid complexity for now
+        const lz4hc_state = try alloc.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(8),
+            @intCast(sys.LZ4_sizeofStateHC()),
+        );
+        // Can use _advanced function and pass customem to make zstd context use the zig allocator too.
+        // Using simple function to avoid complexity for now
         const zstd_ctx = sys.ZSTD_createCCtx() orelse unreachable;
 
         return .{
@@ -100,7 +104,12 @@ pub fn compress_bound(input_size: usize) usize {
 }
 
 fn lz4_compress(src: []const u8, dst: []u8) CompressError!usize {
-    const lz4_size = sys.LZ4_compress_default(@ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len));
+    const lz4_size = sys.LZ4_compress_default(
+        @ptrCast(src.ptr),
+        @ptrCast(dst.ptr),
+        @intCast(src.len),
+        @intCast(dst.len),
+    );
     if (lz4_size != 0) {
         return @intCast(lz4_size);
     } else {
@@ -118,7 +127,14 @@ fn zstd_compress(ctx: *sys.ZSTD_CCtx, src: []const u8, dst: []u8, level: i32) Co
 }
 
 fn lz4_compress_hc(state: [*]align(8) u8, src: []const u8, dst: []u8, level: u8) CompressError!usize {
-    const res = sys.LZ4_compress_HC_extStateHC(state, @ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len), level);
+    const res = sys.LZ4_compress_HC_extStateHC(
+        state,
+        @ptrCast(src.ptr),
+        @ptrCast(dst.ptr),
+        @intCast(src.len),
+        @intCast(dst.len),
+        level,
+    );
     if (res != 0) {
         return @intCast(res);
     } else {
@@ -134,7 +150,12 @@ fn zstd_decompress(ctx: *sys.ZSTD_DCtx, src: []const u8, dst: []u8) DecompressEr
 }
 
 fn lz4_decompress(src: []const u8, dst: []u8) DecompressError!void {
-    const res = sys.LZ4_decompress_safe(@ptrCast(src.ptr), @ptrCast(dst.ptr), @intCast(src.len), @intCast(dst.len));
+    const res = sys.LZ4_decompress_safe(
+        @ptrCast(src.ptr),
+        @ptrCast(dst.ptr),
+        @intCast(src.len),
+        @intCast(dst.len),
+    );
     if (res < 0 or @as(usize, @intCast(res)) != dst.len) {
         return DecompressError.DecompressFail;
     }

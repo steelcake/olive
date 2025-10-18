@@ -53,6 +53,8 @@ pub const TableSchema = struct {
     data_types: []const DataType,
     /// Minmax index is only supported for primitive and binary types
     has_minmax_index: []const bool,
+    /// Whether row compression is applied to this field 
+    row_compression: []const bool,
 
     pub fn eql(self: *const TableSchema, other: *const TableSchema) bool {
         if (self.field_names.len != other.field_names.len) {
