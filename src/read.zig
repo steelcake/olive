@@ -19,7 +19,7 @@ const dict_impl = @import("./dict.zig");
 const Compression = compression.Compression;
 const Decompressor = compression.Decompressor;
 
-const Error = error{
+pub const Error = error{
     OutOfMemory,
     DataSectionTooSmall,
     DecompressFail,
