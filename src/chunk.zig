@@ -30,6 +30,7 @@ pub const Chunk = struct {
         for (self.tables, 0..) |table, table_idx| {
             const fields = try alloc.alloc(arr.Array, table.fields.len);
 
+            var t = timer();
             for (table.fields, 0..) |*field, field_idx| {
                 if (schema_impl.find_dict_idx(self.schema.dicts, table_idx, field_idx)) |dict_idx| {
                     fields[field_idx] = try dict_impl.unpack_dict(
@@ -41,12 +42,17 @@ pub const Chunk = struct {
                 } else {
                     fields[field_idx] = field.*;
                 }
+                std.debug.print("\t\t FFFFFFIELD in {}us\n", .{t.lap() / 1000});
             }
 
             out[table_idx] = fields;
         }
 
         return out;
+    }
+
+    fn timer() std.time.Timer {
+        return std.time.Timer.start() catch unreachable;
     }
 
     pub fn from_arrow(
@@ -61,12 +67,16 @@ pub const Chunk = struct {
         const dict_arrays = try alloc.alloc(arr.FixedSizeBinaryArray, num_dicts);
         const dict_lookup = try scratch_alloc.alloc(std.StringHashMapUnmanaged(u32), num_dicts);
 
+        var t = timer();
+
         for (schema.dicts, 0..) |dict, dict_idx| {
             var num_elems: usize = 0;
 
             for (dict.members) |member| {
                 num_elems += try dict_impl.count_array_to_dict(&tables[member.table_index][member.field_index]);
             }
+
+            std.debug.print("\t\t COUNT in {}us\n", .{t.lap() / 1000});
 
             var elems = std.StringHashMapUnmanaged(u32){};
             try elems.ensureTotalCapacity(scratch_alloc, @intCast(num_elems));
@@ -76,37 +86,56 @@ pub const Chunk = struct {
                 try dict_impl.push_array_to_dict(array, &elems);
             }
 
-            const elems_list = try scratch_alloc.alloc([]const u8, elems.count());
+            std.debug.print("\t\t PUSH in {}us\n", .{t.lap() / 1000});
+
+            const elems_list = try alloc.alloc([20]u8, elems.count());
             var elems_it = elems.keyIterator();
             var idx: u32 = 0;
             while (elems_it.next()) |key| {
-                elems_list[idx] = key.*;
+                @memcpy(&elems_list[idx], key.*);
                 idx += 1;
             }
 
-            std.mem.sortUnstable([]const u8, elems_list, {}, stringLessThan);
+            std.debug.print("\t\t COPY in {}us\n", .{t.lap() / 1000});
+
+            std.sort.pdq([20]u8, elems_list, {}, stringLessThan);
+
+            std.debug.print("\t\t SORT in {}us\n", .{t.lap() / 1000});
 
             idx = 0;
             while (idx < elems_list.len) : (idx += 1) {
-                elems.putAssumeCapacity(elems_list[idx], idx);
+                elems.putAssumeCapacity(&elems_list[idx], idx);
             }
+
+            std.debug.print("\t\t REINDEX in {}us\n", .{t.lap() / 1000});
 
             dict_lookup[dict_idx] = elems;
 
             std.debug.assert(dict.byte_width > 0);
 
-            const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(
-                dict.byte_width,
-                elems_list,
-                false,
-                alloc,
-            ) catch |e| {
-                switch (e) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.InvalidSliceLength => return error.DictElemInvalidLen,
-                    else => unreachable,
-                }
+            const dict_array = arrow.array.FixedSizeBinaryArray{
+                .byte_width = dict.byte_width,
+                .len = @intCast(elems_list.len),
+                .data = @ptrCast(elems_list),
+                .offset = 0,
+                .validity = null,
+                .null_count = 0,
             };
+
+            // const dict_array = arrow.builder.FixedSizeBinaryBuilder.from_slice(
+            //     dict.byte_width,
+            //     elems_list,
+            //     false,
+            //     alloc,
+            // ) catch |e| {
+            //     switch (e) {
+            //         error.OutOfMemory => return error.OutOfMemory,
+            //         error.InvalidSliceLength => return error.DictElemInvalidLen,
+            //         else => unreachable,
+            //     }
+            // };
+
+            std.debug.print("\t\t BUILD in {}us\n", .{t.lap() / 1000});
 
             dict_arrays[dict_idx] = dict_array;
         }
@@ -122,12 +151,15 @@ pub const Chunk = struct {
 
             const fields = try alloc.alloc(arr.Array, table.len);
 
+            _ = t.lap();
             for (table, 0..) |*array, field_idx| {
                 if (schema_impl.find_dict_idx(schema.dicts, table_idx, field_idx)) |dict_idx| {
                     fields[field_idx] = .{ .u32 = try dict_impl.apply_dict(&dict_lookup[dict_idx], array, alloc) };
                 } else {
                     fields[field_idx] = array.*;
                 }
+
+                std.debug.print("\t\t FIELD in {}us\n", .{t.lap() / 1000});
             }
 
             out[table_idx] = .{
@@ -144,6 +176,13 @@ pub const Chunk = struct {
     }
 };
 
-fn stringLessThan(_: void, l: []const u8, r: []const u8) bool {
-    return std.mem.order(u8, l, r) == .lt;
+fn stringLessThan(_: void, l: [20]u8, r: [20]u8) bool {
+    inline for (0..20) |idx| {
+        if (l[idx] >= r[idx]) {
+            return false;
+        }
+    }
+    return true;
+    // return l < r;
+    // return std.mem.order(u8, l, r) == .lt;
 }

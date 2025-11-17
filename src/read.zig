@@ -254,9 +254,13 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
         .dict => |dict_t| .{ .dict = try read_dict(ctx, dict_t.*, &field_header.dict) },
     };
 
+    var timer = std.time.Timer.start() catch unreachable;
+
     arrow.validate.validate(&array) catch {
         return Error.ValidationError;
     };
+
+    std.log.warn("VALIDATE VALDIATE: {}", .{timer.lap() / 1000});
 
     return array;
 }

@@ -29,6 +29,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const fuzzin = b.dependency("fuzzin", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("olive", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -39,6 +44,7 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(lz4.artifact("lz4"));
     mod.addImport("arrow", arrow.module("arrow"));
     mod.addImport("borsh", borsh.module("borsh"));
+    mod.addImport("fuzzin", fuzzin.module("fuzzin"));
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -61,6 +67,7 @@ pub fn build(b: *std.Build) void {
     });
     fuzz.root_module.addImport("olive", mod);
     fuzz.root_module.addImport("arrow", arrow.module("arrow"));
+    fuzz.root_module.addImport("fuzzin", fuzzin.module("fuzzin"));
 
     const run_fuzz = b.addRunArtifact(fuzz);
 

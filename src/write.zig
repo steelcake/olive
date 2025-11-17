@@ -20,21 +20,6 @@ pub const Error = error{
     FilterConstructFail,
 };
 
-pub const ChunkCompression = struct {
-    tables: []const TableCompression,
-    dicts: []const Compression,
-};
-
-pub const TableCompression = struct {
-    fields: []const FieldCompression,
-};
-
-pub const FieldCompression = union(enum) {
-    flat: Compression,
-    fields: []const FieldCompression,
-    nested: *const FieldCompression,
-};
-
 const Context = struct {
     header_alloc: Allocator,
     scratch_alloc: Allocator,
@@ -42,6 +27,12 @@ const Context = struct {
     data_section_size: *u32,
     page_size: u32,
     compressor: *Compressor,
+    compr_bias: CompressionBias,
+};
+
+pub const CompressionBias = enum {
+    balanced,
+    read_optimized,
 };
 
 pub fn write(params: struct {
@@ -52,12 +43,15 @@ pub fn write(params: struct {
     /// Allocator for allocating temporary memory used for constructing the output
     scratch_alloc: Allocator,
     /// Allocator for allocating filters, filters won't be built if this argument is null
-    filter_alloc: ?Allocator,
+    filter_alloc: ?Allocator = null,
     /// For outputting the buffers
     data_section: []u8,
     /// Targeted page size in kilobytes
-    page_size: ?u32,
-    compression: *const ChunkCompression,
+    page_size: ?u32 = null,
+    /// What to optimize the compression algorihm for.
+    ///
+    /// Read optimized heavily optimizes for read speed at the cost of write speed.
+    compression_bias: CompressionBias = .balanced,
 }) Error!header.Header {
     const sch = params.chunk.schema;
 
@@ -73,6 +67,7 @@ pub fn write(params: struct {
         .data_section_size = &data_section_size,
         .page_size = params.page_size orelse 1 << 30,
         .compressor = &compressor,
+        .compr_bias = params.compression_bias,
     };
 
     std.debug.assert(ctx.page_size > 0);
@@ -111,13 +106,12 @@ pub fn write(params: struct {
 
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
-    for (params.chunk.tables, params.compression.tables, 0..) |table, compr, table_idx| {
+    for (params.chunk.tables, 0..) |table, table_idx| {
         const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
 
-        for (table.fields, compr.fields, 0..) |*array, c_algo, field_idx| {
+        for (table.fields, 0..) |*array, field_idx| {
             fields[field_idx] = try write_field(
                 ctx,
-                c_algo,
                 sch.tables[table_idx].has_minmax_index[field_idx],
                 array,
             );
@@ -138,7 +132,6 @@ pub fn write(params: struct {
 
 fn write_field(
     ctx: Context,
-    compr: FieldCompression,
     has_minmax_index: bool,
     array: *const arr.Array,
 ) Error!header.Array {
@@ -147,181 +140,157 @@ fn write_field(
         .i8 => |*a| return .{ .i8 = try write_primitive_array(
             i8,
             ctx,
-            compr.flat,
             has_minmax_index,
             a,
         ) },
-        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, ctx, compr.flat, has_minmax_index, a) },
-        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, ctx, compr.flat, has_minmax_index, a) },
-        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, ctx, compr.flat, has_minmax_index, a) },
-        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, ctx, compr.flat, has_minmax_index, a) },
-        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, ctx, compr.flat, has_minmax_index, a) },
-        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, ctx, compr.flat, has_minmax_index, a) },
-        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, ctx, compr.flat, has_minmax_index, a) },
-        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, ctx, compr.flat, has_minmax_index, a) },
-        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, ctx, compr.flat, has_minmax_index, a) },
-        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, ctx, compr.flat, has_minmax_index, a) },
+        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, ctx, has_minmax_index, a) },
+        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, ctx, has_minmax_index, a) },
+        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, ctx, has_minmax_index, a) },
+        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, ctx, has_minmax_index, a) },
+        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, ctx, has_minmax_index, a) },
+        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, ctx, has_minmax_index, a) },
+        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, ctx, has_minmax_index, a) },
+        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, ctx, has_minmax_index, a) },
+        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, ctx, has_minmax_index, a) },
+        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, ctx, has_minmax_index, a) },
         .binary => |*a| return .{ .binary = try write_binary_array(.i32, .{
             .ctx = ctx,
-            .compr = compr.flat,
             .has_minmax_index = has_minmax_index,
             .array = a,
         }) },
         .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, .{
             .ctx = ctx,
-            .compr = compr.flat,
             .has_minmax_index = has_minmax_index,
             .array = &a.inner,
         }) },
-        .bool => |*a| return .{ .bool = try write_bool_array(ctx, compr.flat, a) },
+        .bool => |*a| return .{ .bool = try write_bool_array(ctx, a) },
         .decimal32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .decimal64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .decimal128 => |*a| return .{ .i128 = try write_primitive_array(
             i128,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .decimal256 => |*a| return .{ .i256 = try write_primitive_array(
             i256,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .date32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .date64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .time32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .time64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .timestamp => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .interval_year_month => |*a| return .{ .interval_year_month = try write_interval_array(
             i32,
             ctx,
-            compr.flat,
             &a.inner,
         ) },
         .interval_day_time => |*a| return .{ .interval_day_time = try write_interval_array(
             [2]i32,
             ctx,
-            compr.flat,
             &a.inner,
         ) },
         .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_interval_array(
             arr.MonthDayNano,
             ctx,
-            compr.flat,
             &a.inner,
         ) },
-        .list => |*a| return .{ .list = try write_list_array(.i32, ctx, compr.nested.*, a) },
-        .struct_ => |*a| return .{ .struct_ = try write_struct_array(ctx, compr.fields, a) },
-        .dense_union => |*a| return .{ .dense_union = try write_dense_union_array(ctx, compr.fields, a) },
-        .sparse_union => |*a| return .{ .sparse_union = try write_sparse_union_array(ctx, compr.fields, a) },
+        .list => |*a| return .{ .list = try write_list_array(.i32, ctx, a) },
+        .struct_ => |*a| return .{ .struct_ = try write_struct_array(ctx, a) },
+        .dense_union => |*a| return .{ .dense_union = try write_dense_union_array(ctx, a) },
+        .sparse_union => |*a| return .{ .sparse_union = try write_sparse_union_array(ctx, a) },
         .fixed_size_binary => |*a| return .{ .fixed_size_binary = try write_fixed_size_binary_array(
             ctx,
-            compr.flat,
             has_minmax_index,
             a,
         ) },
         .fixed_size_list => |*a| return .{ .fixed_size_list = try write_fixed_size_list_array(
             ctx,
-            compr.nested.*,
             a,
         ) },
-        .map => |*a| return .{ .map = try write_map_array(ctx, compr.fields, a) },
+        .map => |*a| return .{ .map = try write_map_array(ctx, a) },
         .duration => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
         .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, .{
             .ctx = ctx,
-            .compr = compr.flat,
             .has_minmax_index = has_minmax_index,
             .array = a,
         }) },
         .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, .{
             .ctx = ctx,
-            .compr = compr.flat,
             .has_minmax_index = has_minmax_index,
             .array = &a.inner,
         }) },
-        .large_list => |*a| return .{ .list = try write_list_array(.i64, ctx, compr.nested.*, a) },
-        .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(ctx, compr.nested.*, a) },
+        .large_list => |*a| return .{ .list = try write_list_array(.i64, ctx, a) },
+        .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(ctx, a) },
         .binary_view => |*a| return .{ .binary = try write_binary_view_array(
             ctx,
-            compr.flat,
             has_minmax_index,
             a,
         ) },
         .utf8_view => |*a| return .{ .binary = try write_binary_view_array(
             ctx,
-            compr.flat,
             has_minmax_index,
             &a.inner,
         ) },
-        .list_view => |*a| return .{ .list = try write_list_view_array(.i32, ctx, compr.nested.*, a) },
-        .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, ctx, compr.nested.*, a) },
-        .dict => |*a| return .{ .dict = try write_dict_array(ctx, compr.nested.*, a) },
+        .list_view => |*a| return .{ .list = try write_list_view_array(.i32, ctx, a) },
+        .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, ctx, a) },
+        .dict => |*a| return .{ .dict = try write_dict_array(ctx, a) },
     }
 }
 
 fn write_array(
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.Array,
 ) Error!header.Array {
-    return try write_field(ctx, compr, false, array);
+    return try write_field(ctx, false, array);
 }
 
 fn write_list_view_array(
     comptime index_t: arr.IndexType,
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.GenericListViewArray(index_t),
 ) Error!header.ListArray {
     var builder = arrow.builder.GenericListBuilder(index_t).with_capacity(
@@ -376,7 +345,7 @@ fn write_list_view_array(
 
     const list_array = builder.finish(inner) catch unreachable;
 
-    return try write_list_array(index_t, ctx, compr, &list_array);
+    return try write_list_array(index_t, ctx, &list_array);
 }
 
 fn scalar_to_u32(scalar: arrow.scalar.Scalar) u32 {
@@ -449,7 +418,6 @@ fn normalize_dict_array_keys(
 
 fn write_dict_array(
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.DictArray,
 ) Error!header.DictArray {
     if (array.len == 0) {
@@ -457,7 +425,7 @@ fn write_dict_array(
         const values = try ctx.header_alloc.create(header.Array);
 
         keys.* = try write_array(ctx, .{ .flat = .lz4 }, &arrow.slice.slice(array.keys, 0, 0));
-        values.* = try write_array(ctx, compr, &arrow.slice.slice(array.values, 0, 0));
+        values.* = try write_array(ctx, &arrow.slice.slice(array.values, 0, 0));
 
         return .{
             .keys = keys,
@@ -476,7 +444,7 @@ fn write_dict_array(
     const sliced_values = arrow.slice.slice(array.values, min_key, max_key - min_key + 1);
 
     const values = try ctx.header_alloc.create(header.Array);
-    values.* = try write_array(ctx, compr, &sliced_values);
+    values.* = try write_array(ctx, &sliced_values);
 
     const keys_arr: arr.Array = switch (sliced_keys) {
         .i8 => |*a| .{ .i8 = try normalize_dict_array_keys(i8, base_key, a, ctx.scratch_alloc) },
@@ -503,7 +471,6 @@ fn write_dict_array(
 
 fn write_run_end_encoded_array(
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.RunEndArray,
 ) Error!header.RunEndArray {
     const normalized = try arrow.slice.normalize_run_end_encoded(array, 0, ctx.scratch_alloc);
@@ -511,7 +478,7 @@ fn write_run_end_encoded_array(
     const run_ends = try ctx.header_alloc.create(header.Array);
     run_ends.* = try write_array(ctx, .{ .flat = .lz4 }, normalized.run_ends);
     const values = try ctx.header_alloc.create(header.Array);
-    values.* = try write_array(ctx, compr, normalized.values);
+    values.* = try write_array(ctx, normalized.values);
 
     return .{
         .run_ends = run_ends,
@@ -522,7 +489,6 @@ fn write_run_end_encoded_array(
 
 fn write_map_array(
     ctx: Context,
-    compr: []const FieldCompression,
     array: *const arr.MapArray,
 ) Error!header.MapArray {
     const entries = slice_entries: {
@@ -532,7 +498,7 @@ fn write_map_array(
         const sliced = arrow.slice.slice_struct(array.entries, start, end - start);
 
         const entries = try ctx.header_alloc.create(header.StructArray);
-        entries.* = try write_struct_array(ctx, compr, &sliced);
+        entries.* = try write_struct_array(ctx, &sliced);
 
         break :slice_entries entries;
     };
@@ -563,7 +529,6 @@ fn write_map_array(
 
 fn write_sparse_union_array(
     ctx: Context,
-    compr: []const FieldCompression,
     array: *const arr.SparseUnionArray,
 ) Error!header.SparseUnionArray {
     const type_ids = try write_buffer(
@@ -575,9 +540,9 @@ fn write_sparse_union_array(
 
     const children = try ctx.header_alloc.alloc(header.Array, array.inner.children.len);
 
-    for (array.inner.children, compr, 0..) |*c, c_algo, idx| {
+    for (array.inner.children, 0..) |*c, idx| {
         const sliced = arrow.slice.slice(c, array.inner.offset, array.inner.len);
-        children[idx] = try write_array(ctx, c_algo, &sliced);
+        children[idx] = try write_array(ctx, &sliced);
     }
 
     return .{
@@ -591,7 +556,6 @@ fn write_sparse_union_array(
 
 fn write_dense_union_array(
     ctx: Context,
-    compr: []const FieldCompression,
     array: *const arr.DenseUnionArray,
 ) Error!header.DenseUnionArray {
     // Do a validation here since this function does some complicated operations
@@ -637,8 +601,8 @@ fn write_dense_union_array(
     const offsets = try write_buffer(ctx, .lz4, @ptrCast(normalized_offsets), @sizeOf(i32));
 
     const children = try ctx.header_alloc.alloc(header.Array, array.inner.children.len);
-    for (sliced_children, compr, 0..) |*c, c_algo, child_idx| {
-        children[child_idx] = try write_array(ctx, c_algo, c);
+    for (sliced_children, 0..) |*c, child_idx| {
+        children[child_idx] = try write_array(ctx, c);
     }
 
     return .{
@@ -653,14 +617,13 @@ fn write_dense_union_array(
 
 fn write_struct_array(
     ctx: Context,
-    compr: []const FieldCompression,
     array: *const arr.StructArray,
 ) Error!header.StructArray {
     const field_values = try ctx.header_alloc.alloc(header.Array, array.field_values.len);
 
-    for (array.field_values, compr, 0..) |*field, c_algo, idx| {
+    for (array.field_values, 0..) |*field, idx| {
         const sliced = arrow.slice.slice(field, array.offset, array.len);
-        field_values[idx] = try write_array(ctx, c_algo, &sliced);
+        field_values[idx] = try write_array(ctx, &sliced);
     }
 
     const validity = try write_validity(.{
@@ -680,7 +643,6 @@ fn write_struct_array(
 
 fn write_fixed_size_list_array(
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.FixedSizeListArray,
 ) Error!header.FixedSizeListArray {
     const item_width: u32 = @intCast(array.item_width);
@@ -689,7 +651,7 @@ fn write_fixed_size_list_array(
     const end = start + array.len * item_width;
 
     const inner = try ctx.header_alloc.create(header.Array);
-    inner.* = try write_array(ctx, compr, &arrow.slice.slice(array.inner, start, end - start));
+    inner.* = try write_array(ctx, &arrow.slice.slice(array.inner, start, end - start));
 
     const validity = try write_validity(.{
         .ctx = ctx,
@@ -709,7 +671,6 @@ fn write_fixed_size_list_array(
 fn write_list_array(
     comptime index_t: arr.IndexType,
     ctx: Context,
-    compr: FieldCompression,
     array: *const arr.GenericListArray(index_t),
 ) Error!header.ListArray {
     const I = index_t.to_type();
@@ -721,7 +682,7 @@ fn write_list_array(
         const sliced_inner = arrow.slice.slice(array.inner, start, end - start);
 
         const out = try ctx.header_alloc.create(header.Array);
-        out.* = try write_array(ctx, compr, &sliced_inner);
+        out.* = try write_array(ctx, &sliced_inner);
         break :slice_inner out;
     };
 
@@ -755,7 +716,6 @@ fn write_list_array(
 
 fn write_bool_array(
     ctx: Context,
-    compr: Compression,
     array: *const arr.BoolArray,
 ) Error!header.BoolArray {
     const aligned_values = try maybe_align_bitmap(
@@ -764,7 +724,7 @@ fn write_bool_array(
         array.len,
         ctx.scratch_alloc,
     );
-    const values = try write_buffer(ctx, compr, aligned_values, @sizeOf(u8));
+    const values = try write_buffer(ctx, .lz4, aligned_values, @sizeOf(u8));
     const validity = try write_validity(.{
         .ctx = ctx,
         .offset = array.offset,
@@ -782,7 +742,6 @@ fn write_bool_array(
 
 fn write_fixed_size_binary_array(
     ctx: Context,
-    compr: Compression,
     has_minmax_index: bool,
     array: *const arr.FixedSizeBinaryArray,
 ) Error!header.FixedSizeBinaryArray {
@@ -790,7 +749,7 @@ fn write_fixed_size_binary_array(
 
     const start = array.offset * byte_width;
     const end = start + array.len * byte_width;
-    const data = try write_buffer(ctx, compr, array.data[start..end], @intCast(byte_width));
+    const data = try write_buffer(ctx, .lz4, array.data[start..end], @intCast(byte_width));
 
     const validity = try write_validity(.{
         .ctx = ctx,
@@ -837,7 +796,6 @@ fn write_fixed_size_binary_array(
 
 fn write_binary_view_array(
     ctx: Context,
-    compr: Compression,
     has_minmax_index: bool,
     array: *const arr.BinaryViewArray,
 ) Error!header.BinaryArray {
@@ -897,7 +855,6 @@ fn write_binary_view_array(
         .i64,
         .{
             .ctx = ctx,
-            .compr = compr,
             .has_minmax_index = has_minmax_index,
             .array = &bin_array,
         },
@@ -915,12 +872,11 @@ fn empty_buffer() header.Buffer {
 fn write_interval_array(
     comptime T: type,
     ctx: Context,
-    compr: Compression,
     array: *const arr.PrimitiveArray(T),
 ) Error!header.IntervalArray {
     const values = try write_buffer(
         ctx,
-        compr,
+        .lz4,
         @ptrCast(array.values[array.offset .. array.offset + array.len]),
         @sizeOf(T),
     );
@@ -942,7 +898,6 @@ fn write_interval_array(
 fn write_primitive_array(
     comptime T: type,
     ctx: Context,
-    compr: Compression,
     has_minmax_index: bool,
     array: *const arr.PrimitiveArray(T),
 ) Error!header.PrimitiveArray(T) {
@@ -957,7 +912,7 @@ fn write_primitive_array(
 
     const values = try write_buffer(
         ctx,
-        compr,
+        .lz4,
         @ptrCast(array.values[array.offset .. array.offset + array.len]),
         @sizeOf(T),
     );
@@ -1005,7 +960,6 @@ fn write_binary_array(
     comptime index_t: arr.IndexType,
     params: struct {
         ctx: Context,
-        compr: Compression,
         has_minmax_index: bool,
         array: *const arr.GenericBinaryArray(index_t),
     },
@@ -1015,7 +969,10 @@ fn write_binary_array(
     const data = try write_buffer_with_offsets(
         I,
         params.ctx,
-        params.compr,
+        switch (params.ctx.compr_bias) {
+            .balanced => .zstd,
+            .read_optimized => .lz4_hc,
+        },
         params.array.data,
         params.array.offsets[params.array.offset .. params.array.offset + params.array.len + 1],
     );

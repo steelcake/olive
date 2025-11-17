@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const borsh = @import("borsh");
 const arrow = @import("arrow");
 const DataType = arrow.data_type.DataType;
 
@@ -11,7 +10,7 @@ const Compression = @import("./compression.zig").Compression;
 pub fn find_dict_idx(dicts: []const DictSchema, table_index: usize, field_index: usize) ?usize {
     for (dicts, 0..) |dict, dict_idx| {
         for (dict.members) |member| {
-            if (member.table_index == table_index and member.field_index == field_index) {
+            if ((member.table_index == table_index) & (member.field_index == field_index)) {
                 return dict_idx;
             }
         }
@@ -187,29 +186,10 @@ pub const DictSchema = struct {
     }
 };
 
-const SerdeError = error{
-    BorshError,
-    OutOfMemory,
-    /// Buffer isn't big enough to hold the output
-    BufferTooSmall,
-};
-
 pub const Schema = struct {
     table_names: []const []const u8,
     tables: []const TableSchema,
     dicts: []const DictSchema,
-
-    pub fn deserialize(input: []const u8, alloc: Allocator, max_recursion_depth: u8) SerdeError!Schema {
-        return borsh.serde.deserialize(Schema, input, alloc, max_recursion_depth) catch |e| {
-            if (e == error.OutOfMemory) return SerdeError.OutOfMemory else return SerdeError.BorshError;
-        };
-    }
-
-    pub fn serialize(self: *const Schema, output: []u8, max_recursion_depth: u8) SerdeError!usize {
-        return borsh.serde.serialize(Schema, self, output, max_recursion_depth) catch |e| {
-            if (e == error.BufferTooSmall) return SerdeError.BufferTooSmall else return SerdeError.BorshError;
-        };
-    }
 
     pub fn eql(self: *const Schema, other: *const Schema) bool {
         if (self.table_names.len != other.table_names.len) {

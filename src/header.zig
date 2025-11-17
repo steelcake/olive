@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 const hash_fn = std.hash.XxHash3.hash;
 const xorf = @import("filterz").xorf;
 const arrow = @import("arrow");
-const borsh = @import("borsh");
 
 const Scalar = arrow.scalar.Scalar;
 
@@ -222,29 +221,10 @@ pub const Dict = struct {
     filter: ?Filter,
 };
 
-const SerdeError = error{
-    BorshError,
-    OutOfMemory,
-    /// Buffer isn't big enough to hold the output
-    BufferTooSmall,
-};
-
 pub const Header = struct {
     tables: []const Table,
     dicts: []const Dict,
     data_section_size: u32,
-
-    pub fn deserialize(input: []const u8, alloc: Allocator, max_recursion_depth: u8) SerdeError!Header {
-        return borsh.serde.deserialize(Header, input, alloc, max_recursion_depth) catch |e| {
-            if (e == error.OutOfMemory) return SerdeError.OutOfMemory else return SerdeError.BorshError;
-        };
-    }
-
-    pub fn serialize(self: *const Header, output: []u8, max_recursion_depth: u8) SerdeError!usize {
-        return borsh.serde.serialize(Header, self, output, max_recursion_depth) catch |e| {
-            if (e == error.BufferTooSmall) return SerdeError.BufferTooSmall else return SerdeError.BorshError;
-        };
-    }
 };
 
 /// Ascending sort hashes and deduplicate

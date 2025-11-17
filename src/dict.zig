@@ -84,32 +84,73 @@ fn unpack_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray,
 }
 
 fn unpack_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.UInt32Array, alloc: Allocator) Error!arr.GenericBinaryArray(index_t) {
-    const total_size: u32 = (array.len - array.null_count) * @as(u32, @intCast(dict_array.byte_width));
+    const I = index_t.to_type();
 
-    var builder = arrow.builder.GenericBinaryBuilder(index_t).with_capacity(total_size, array.len, array.null_count > 0, alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
+    const total_size: u32 = array.len * @as(u32, @intCast(dict_array.byte_width));
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+    const data = try alloc.alloc(u8, total_size);
+    @memset(data, 0);
+    const data_out: [][20]u8 = @ptrCast(data);
+    const offsets = try alloc.alloc(I, array.len + 1);
+    offsets[0] = 0;
 
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
+    {
+        var out_idx: u32 = 1;
+        var offset: I = dict_array.byte_width;
+        while (out_idx < array.len + 1) : ({
+            out_idx += 1;
+            offset += dict_array.byte_width;
+        }) {
+            offsets[out_idx] = offset;
         }
     }
 
-    return (builder.finish() catch unreachable);
+    const bw: u32 = @intCast(dict_array.byte_width);
+
+    // if (array.null_count > 0) {
+    //     const validity = (array.validity orelse unreachable).ptr;
+
+    //     var idx = array.offset;
+    //     var out_idx: u32 = 0;
+    //     while (idx < array.offset + array.len) : ({
+    //         idx +%= 1;
+    //         out_idx +%= 1;
+    //     }) {
+    //         if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
+    //             const s = arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset);
+    //             const out = &data_out.ptr[out_idx];
+    //             const s_t: *const [20]u8 = @ptrCast(s);
+    //             out.* = s_t.*;
+    //         }
+    //     }
+    // } else {
+    var idx = array.offset;
+    var offset: u32 = 0;
+    var out_idx: u32 = 0;
+    while (idx < array.offset + array.len) : ({
+        idx +%= 1;
+        offset +%= bw;
+        out_idx +%= 1;
+    }) {
+        const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
+        const s = arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset);
+        const out = &data_out.ptr[out_idx];
+        const s_t: *const [20]u8 = @ptrCast(s);
+        out.* = s_t.*;
+    }
+    // }
+
+    std.debug.assert(array.offset == 0);
+    const validity = if (array.validity) |v| try alloc.dupe(u8, v) else null;
+
+    return arr.GenericBinaryArray(index_t){
+        .null_count = array.null_count,
+        .validity = validity,
+        .offset = 0,
+        .data = data,
+        .len = array.len,
+        .offsets = offsets,
+    };
 }
 
 const DictLookup = std.StringHashMapUnmanaged(u32);
