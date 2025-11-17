@@ -4,8 +4,13 @@ const arrow = @import("arrow");
 const arr = arrow.array;
 const DataType = arrow.data_type.DataType;
 
-const Error = error{
+pub const Error = error{
     OutOfMemory,
+};
+
+pub const PushError = error{
+    NonBinaryArrayWithDict,
+    UnexpectedElementSize,
 };
 
 pub fn DictFn(comptime W: comptime_int) type {
@@ -394,10 +399,64 @@ pub fn DictFn(comptime W: comptime_int) type {
                 .values = values,
             };
         }
+
+        pub fn push_array_to_dict(array: *const arr.Array, elems: *Map) PushError!void {
+            switch (array.*) {
+                .binary => |*a| {
+                    push_binary_to_dict(.i32, a, elems);
+                },
+                .large_binary => |*a| {
+                    push_binary_to_dict(.i64, a, elems);
+                },
+                .binary_view => |*a| {
+                    push_binary_view_to_dict(a, elems);
+                },
+                .fixed_size_binary => |*a| {
+                    push_fixed_size_binary_to_dict(a, elems);
+                },
+                .utf8 => |*a| {
+                    push_binary_to_dict(.i32, &a.inner, elems);
+                },
+                .large_utf8 => |*a| {
+                    push_binary_to_dict(.i64, &a.inner, elems);
+                },
+                .utf8_view => |*a| {
+                    push_binary_view_to_dict(&a.inner, elems);
+                },
+                else => return PushError.NonBinaryArrayWithDict,
+            }
+        }
+
+        fn push_binary_to_dict(
+            comptime index_t: arr.IndexType,
+            array: *const arr.GenericBinaryArray(index_t),
+            out: *Map,
+        ) PushError!void {
+            if (array.len == 0) {
+                return;
+            }
+
+            if (array.null_count > 0) {
+                const validity = (array.validity orelse unreachable).ptr;
+
+                var item: u32 = array.offset;
+                while (item < array.offset + array.len) : (item += 1) {
+                    if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
+                        out.putAssumeCapacity(s, 0);
+                    }
+                }
+            } else {
+                var item: u32 = array.offset;
+                while (item < array.offset + array.len) : (item += 1) {
+                    const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
+                    out.putAssumeCapacity(s, 0);
+                }
+            }
+        }
     };
 }
 
-pub fn count_array_to_dict(array: *const arr.Array) Error!usize {
+pub fn count_array_to_dict(array: *const arr.Array) error{NonBinaryArrayWithDict}!usize {
     switch (array.*) {
         .binary => |*a| {
             return a.len - a.null_count;
@@ -420,64 +479,7 @@ pub fn count_array_to_dict(array: *const arr.Array) Error!usize {
         .utf8_view => |*a| {
             return a.inner.len - a.inner.null_count;
         },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
-
-// u32 is to be used later in to pipeline, just write 0 here
-const DictBuilder = std.StringHashMapUnmanaged(u32);
-
-pub fn push_array_to_dict(array: *const arr.Array, elems: *DictBuilder) Error!void {
-    switch (array.*) {
-        .binary => |*a| {
-            push_binary_to_dict(.i32, a, elems);
-        },
-        .large_binary => |*a| {
-            push_binary_to_dict(.i64, a, elems);
-        },
-        .binary_view => |*a| {
-            push_binary_view_to_dict(a, elems);
-        },
-        .fixed_size_binary => |*a| {
-            push_fixed_size_binary_to_dict(a, elems);
-        },
-        .utf8 => |*a| {
-            push_binary_to_dict(.i32, &a.inner, elems);
-        },
-        .large_utf8 => |*a| {
-            push_binary_to_dict(.i64, &a.inner, elems);
-        },
-        .utf8_view => |*a| {
-            push_binary_view_to_dict(&a.inner, elems);
-        },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
-
-fn push_binary_to_dict(
-    comptime index_t: arr.IndexType,
-    array: *const arr.GenericBinaryArray(index_t),
-    out: *DictBuilder,
-) void {
-    if (array.len == 0) {
-        return;
-    }
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
-                out.putAssumeCapacity(s, 0);
-            }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
-            out.putAssumeCapacity(s, 0);
-        }
+        else => return error.NonBinaryArrayWithDict,
     }
 }
 
