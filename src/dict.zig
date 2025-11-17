@@ -51,7 +51,7 @@ pub fn DictFn(comptime W: comptime_int) type {
             dt: DataType,
             alloc: Allocator,
         ) Error!arr.Array {
-            std.debug.assert(dict_array.bw == W);
+            std.debug.assert(dict_array.byte_width == W);
             std.debug.assert(dict_array.null_count == 0);
 
             const dict: []const [W]u8 = @ptrCast(
@@ -163,12 +163,12 @@ pub fn DictFn(comptime W: comptime_int) type {
             else
                 null;
 
-            const views = try alloc.alloc(arrow.array.BinaryView, array.len);
-
             var idx: u32 = array.offset;
             while (idx < array.offset + array.len) : (idx += 1) {
                 std.debug.assert(array.values[idx] < dict.len);
             }
+
+            const views = try alloc.alloc(arrow.array.BinaryView, array.len);
 
             idx = array.offset;
             var o_idx: u32 = 0;
@@ -228,61 +228,59 @@ pub fn DictFn(comptime W: comptime_int) type {
                 .offsets = offsets,
             };
         }
-    };
-}
 
-pub fn apply_dict(dict: *const DictLookup, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
-    switch (array.*) {
-        .binary => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict, a, scratch_alloc);
-        },
-        .large_binary => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict, a, scratch_alloc);
-        },
-        .binary_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict, a, scratch_alloc);
-        },
-        .fixed_size_binary => |*a| {
-            return try apply_dict_to_fixed_size_binary_array(dict, a, scratch_alloc);
-        },
-        .utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict, &a.inner, scratch_alloc);
-        },
-        .large_utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict, &a.inner, scratch_alloc);
-        },
-        .utf8_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict, &a.inner, scratch_alloc);
-        },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
-
-fn apply_dict_to_binary_view_array(dict: *const DictLookup, array: *const arr.BinaryViewArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
-    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
+        pub fn apply_dict(
+            dict: *const Map,
+            array: *const arr.Array,
+            alloc: Allocator,
+        ) Error!arr.UInt32Array {
+            switch (array.*) {
+                .binary => |*a| {
+                    return try apply_dict_to_binary_array(.i32, dict, a, alloc);
+                },
+                .large_binary => |*a| {
+                    return try apply_dict_to_binary_array(.i64, dict, a, alloc);
+                },
+                .binary_view => |*a| {
+                    return try apply_dict_to_binary_view_array(dict, a, alloc);
+                },
+                .fixed_size_binary => |*a| {
+                    return try apply_dict_to_fixed_size_binary_array(dict, a, alloc);
+                },
+                .utf8 => |*a| {
+                    return try apply_dict_to_binary_array(.i32, dict, &a.inner, alloc);
+                },
+                .large_utf8 => |*a| {
+                    return try apply_dict_to_binary_array(.i64, dict, &a.inner, alloc);
+                },
+                .utf8_view => |*a| {
+                    return try apply_dict_to_binary_view_array(dict, &a.inner, alloc);
+                },
+                else => std.debug.panic("non binary array with dict"),
             }
         }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-        }
-    }
 
-    return (builder.finish() catch unreachable);
+        fn apply_dict_to_binary_view_array(
+            dict: *const Map,
+            array: *const arr.BinaryViewArray,
+            scratch_alloc: Allocator,
+        ) Error!arr.UInt32Array {
+            var idx: u32 = array.offset;
+            while (idx < array.offset + array.len) : (idx += 1) {
+                std.debug.assert(array.views[idx].length == W);
+            }
+
+            const values = try scratch_alloc.alloc(u32, array.len);
+            idx = array.offset;
+            var o_idx: u32 = 0;
+            while (idx < array.offset + array.len) : ({
+                idx += 1;
+                o_idx += 1;
+            }) {
+                values[o_idx] = dict.get() orelse 0;
+            }
+        }
+    };
 }
 
 fn apply_dict_to_fixed_size_binary_array(dict: *const DictLookup, array: *const arr.FixedSizeBinaryArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
