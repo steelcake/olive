@@ -20,7 +20,7 @@ fn Hasher(comptime W: comptime_int) type {
 
         fn finalize4(v: u64, bytes: [4]u8) u64 {
             var acc = v;
-            const lane: u32 = @bitCast(bytes);
+            const lane: u64 = @as(u32, @bitCast(bytes));
             acc ^= lane *% prime_1;
             acc = rotl(u64, acc, 23) *% prime_2;
             acc +%= prime_3;
@@ -47,16 +47,16 @@ fn Hasher(comptime W: comptime_int) type {
             var acc = seed +% prime_5 +% W;
             switch (W) {
                 20 => {
-                    acc = finalize8(acc, input[0..8]);
-                    acc = finalize8(acc, input[8..16]);
-                    acc = finalize4(acc, input[16..20]);
+                    acc = finalize8(acc, input[0..8].*);
+                    acc = finalize8(acc, input[8..16].*);
+                    acc = finalize4(acc, input[16..20].*);
                     return avalanche(acc);
                 },
                 32 => {
-                    acc = finalize8(acc, input[0..8]);
-                    acc = finalize8(acc, input[8..16]);
-                    acc = finalize8(acc, input[16..24]);
-                    acc = finalize8(acc, input[24..32]);
+                    acc = finalize8(acc, input[0..8].*);
+                    acc = finalize8(acc, input[8..16].*);
+                    acc = finalize8(acc, input[16..24].*);
+                    acc = finalize8(acc, input[24..32].*);
                     return avalanche(acc);
                 },
                 else => @compileError("unsupported width"),
