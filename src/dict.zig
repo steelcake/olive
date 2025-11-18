@@ -4,6 +4,8 @@ const arrow = @import("arrow");
 const arr = arrow.array;
 const DataType = arrow.data_type.DataType;
 
+pub const Hasher = @import("./hash.zig").Hasher;
+
 pub const Error = error{
     OutOfMemory,
 };
@@ -28,7 +30,7 @@ pub fn DictFn(comptime W: comptime_int) type {
 
             pub fn hash(self: Self, val: T) u64 {
                 _ = self;
-                return XxHash64(W).hash(69, val);
+                return Hasher(W).hash(69, val);
             }
 
             pub fn eql(self: Self, a: T, b: T) bool {
@@ -532,101 +534,5 @@ fn push_fixed_size_binary_to_dict(
             const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
             out.putAssumeCapacity(s, 0);
         }
-    }
-}
-
-// adapted version of std.hash.XxHash64
-fn XxHash64(comptime W: comptime_int) type {
-    const rotl = std.math.rotl;
-
-    const prime_1 = 0x9E3779B185EBCA87; // 0b1001111000110111011110011011000110000101111010111100101010000111
-    const prime_2 = 0xC2B2AE3D27D4EB4F; // 0b1100001010110010101011100011110100100111110101001110101101001111
-    const prime_3 = 0x165667B19E3779F9; // 0b0001011001010110011001111011000110011110001101110111100111111001
-    const prime_4 = 0x85EBCA77C2B2AE63; // 0b1000010111101011110010100111011111000010101100101010111001100011
-    const prime_5 = 0x27D4EB2F165667C5; // 0b0010011111010100111010110010111100010110010101100110011111000101
-
-    return struct {
-        fn finalize8(v: u64, bytes: [8]u8) u64 {
-            var acc = v;
-            const lane: u64 = @bitCast(bytes);
-            acc ^= round(0, lane);
-            acc = rotl(u64, acc, 27) *% prime_1;
-            acc +%= prime_4;
-            return acc;
-        }
-
-        fn finalize4(v: u64, bytes: [4]u8) u64 {
-            var acc = v;
-            const lane: u32 = @bitCast(bytes);
-            acc ^= lane *% prime_1;
-            acc = rotl(u64, acc, 23) *% prime_2;
-            acc +%= prime_3;
-            return acc;
-        }
-
-        fn round(acc: u64, lane: u64) u64 {
-            const a = acc +% (lane *% prime_2);
-            const b = rotl(u64, a, 31);
-            return b *% prime_1;
-        }
-
-        fn avalanche(value: u64) u64 {
-            var result = value ^ (value >> 33);
-            result *%= prime_2;
-            result ^= result >> 29;
-            result *%= prime_3;
-            result ^= result >> 32;
-
-            return result;
-        }
-
-        pub fn hash(seed: u64, input: [W]u8) u64 {
-            var acc = seed +% prime_5 +% W;
-            switch (W) {
-                20 => {
-                    acc = finalize8(acc, input[0..8]);
-                    acc = finalize8(acc, input[8..16]);
-                    acc = finalize4(acc, input[16..20]);
-                    return avalanche(acc);
-                },
-                32 => {
-                    acc = finalize8(acc, input[0..8]);
-                    acc = finalize8(acc, input[8..16]);
-                    acc = finalize8(acc, input[16..24]);
-                    acc = finalize8(acc, input[24..32]);
-                    return avalanche(acc);
-                },
-                else => @compileError("unsupported width"),
-            }
-        }
-    };
-}
-
-fn copy_validity(
-    v: []const u8,
-    offset: u32,
-    len: u32,
-    alloc: Allocator,
-) error{OutOfMemory}![]const u8 {
-    std.debug.assert(len > 0);
-
-    if (offset % 8 == 0) {
-        return try alloc.dupe(u8, v[offset / 8 .. (offset + len + 7) / 8]);
-    } else {
-        const out = try alloc.alloc(u8, (len + 7) / 8);
-        @memset(out, 0);
-
-        var idx: u32 = offset;
-        var o_idx: u32 = 0;
-        while (idx < offset + len) : ({
-            idx += 1;
-            o_idx += 1;
-        }) {
-            if (arrow.bitmap.get(v, idx)) {
-                arrow.bitmap.set(out, o_idx);
-            }
-        }
-
-        return out;
     }
 }

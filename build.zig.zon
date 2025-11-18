@@ -17,8 +17,8 @@
             .hash = "lz4-1.10.0-6-ewyzw-4NAAAWDpY4xpiqr4LQhZQAC0x_rGnW2iPh6jk2",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.29.tar.gz",
-            .hash = "arrow-0.0.29-ZFEaqDmBBAA_WV4loetmH9euv-9KjbdTB1zZd_0vtUV5",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.30.tar.gz",
+            .hash = "arrow-0.0.30-ZFEaqPaDBABdzRus658UBmx_8kaTZcLx-ehtMHozuToq",
         },
         .borsh = .{
             .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.14.tar.gz",
