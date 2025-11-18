@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0-dev.464+df1909900",
     .dependencies = .{
         .filterz = .{
-            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.10.tar.gz",
-            .hash = "filterz-0.0.10-n5a1113IAACz6yWzS7ZbZzNA5_DqXapTVXqOAV3M7eCz",
+            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.11.tar.gz",
+            .hash = "filterz-0.0.11-n5a11_nHAAA0YglKKYPklAT76AyKmV82tlrnHQ7Czy8L",
         },
         .zstd = .{
             .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
@@ -17,8 +17,8 @@
             .hash = "lz4-1.10.0-6-ewyzw-4NAAAWDpY4xpiqr4LQhZQAC0x_rGnW2iPh6jk2",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.28.tar.gz",
-            .hash = "arrow-0.0.28-ZFEaqAduBADtczwOrXSVr2TH5Ai7LraLpaOfkz4UKnc3",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.29.tar.gz",
+            .hash = "arrow-0.0.29-ZFEaqDmBBAA_WV4loetmH9euv-9KjbdTB1zZd_0vtUV5",
         },
         .borsh = .{
             .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.14.tar.gz",
