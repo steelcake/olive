@@ -14,10 +14,8 @@ pub const read = @import("./read.zig");
 const dict = @import("./dict.zig");
 pub const chunk = @import("./chunk.zig");
 pub const fuzz_input = @import("./fuzz_input.zig");
-pub const hash = @import("./hash.zig");
 
 test {
-    _ = hash;
     _ = fuzz_input;
     _ = chunk;
     _ = dict;

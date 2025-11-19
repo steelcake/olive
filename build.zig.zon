@@ -4,10 +4,6 @@
     .fingerprint = 0xaf0be4322c7292de, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0-dev.464+df1909900",
     .dependencies = .{
-        .filterz = .{
-            .url = "https://github.com/steelcake/filterz/archive/refs/tags/v0.0.11.tar.gz",
-            .hash = "filterz-0.0.11-n5a11_nHAAA0YglKKYPklAT76AyKmV82tlrnHQ7Czy8L",
-        },
         .zstd = .{
             .url = "https://github.com/allyourcodebase/zstd/archive/refs/tags/1.5.7.tar.gz",
             .hash = "zstd-1.5.7-KEItkJ8vAAC5_rRlKmLflYQ-eKXbAIQBWZNmmJtS18q0",
@@ -19,10 +15,6 @@
         .arrow = .{
             .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.30.tar.gz",
             .hash = "arrow-0.0.30-ZFEaqPaDBABdzRus658UBmx_8kaTZcLx-ehtMHozuToq",
-        },
-        .borsh = .{
-            .url = "https://github.com/steelcake/borsh-zig/archive/refs/tags/v0.0.14.tar.gz",
-            .hash = "borsh-0.0.14-vlKk2TShAACFpk_0jvhQCdi04TltC_VsH4UNyIkHMlPL",
         },
         .fuzzin = .{
             .url = "https://github.com/steelcake/fuzzin/archive/refs/tags/v0.0.10.tar.gz",
