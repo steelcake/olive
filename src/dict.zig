@@ -336,18 +336,29 @@ pub fn DictFn(comptime W: comptime_int) type {
             if (array.null_count > 0) {
                 const v = array.validity orelse unreachable;
 
-                var idx: u32 = array.offset;
-                var o_idx: u32 = 0;
-                while (idx < array.offset + array.len) : ({
-                    idx += 1;
-                    o_idx += 1;
-                }) {
-                    if (arrow.get.get_binary_view_opt(array.buffers, array.views, v, idx)) |s| {
-                        std.debug.assert(s.len == W);
-                        const sv: T = @as([]const T, @ptrCast(s))[0];
-                        values[o_idx] = dict.get(sv) orelse unreachable;
+                const Closure = struct {
+                    vals: []u32,
+                    a: *const arr.BinaryViewArray,
+                    di: *const Map,
+
+                    fn process(self: @This(), idx: u32) void {
+                        const s = arrow.get.get_binary_view(self.a.buffers, self.a.views, idx);
+                        self.vals[idx - self.a.offset] = self.di.get(s[0..W]) orelse 0;
                     }
-                }
+                };
+
+                arrow.bitmap.for_each(
+                    Closure,
+                    Closure.process,
+                    Closure{
+                        .vals = values,
+                        .a = array,
+                        .di = dict,
+                    },
+                    v,
+                    array.offset,
+                    array.len,
+                );
             } else {
                 var idx: u32 = array.offset;
                 var o_idx: u32 = 0;
@@ -357,8 +368,7 @@ pub fn DictFn(comptime W: comptime_int) type {
                 }) {
                     const s = arrow.get.get_binary_view(array.buffers, array.views, idx);
                     std.debug.assert(s.len == W);
-                    const sv: T = @as([]const T, @ptrCast(s))[0];
-                    values[o_idx] = dict.get(sv) orelse unreachable;
+                    values[o_idx] = dict.get(s[0..W]) orelse 0;
                 }
             }
 
@@ -423,22 +433,12 @@ pub fn DictFn(comptime W: comptime_int) type {
             array: *const arr.GenericBinaryArray(index_t),
             alloc: Allocator,
         ) Error!arr.UInt32Array {
-            var idx: u32 = array.offset;
-            while (idx < array.offset + array.len) : (idx += 1) {
-                const start = array.offsets[idx];
-                const end = array.offsets[idx + 1];
-                std.debug.assert(end - start == W);
-            }
-
-            const data: []const T = @ptrCast(
-                array.data[array.offset * W .. (array.offset + array.len) * W],
-            );
-
             const values = try alloc.alloc(u32, array.len);
 
-            idx = 0;
-            while (idx < array.len) : (idx += 1) {
-                values[idx] = dict.get(data[idx]) orelse 0;
+            var idx: u32 = array.offset;
+            while (idx < array.offset + array.len) : (idx += 1) {
+                const s = arrow.get.get_binary(index_t, array.data, array.offsets, idx);
+                values[idx - array.offset] = dict.get(s[0..W]) orelse 0;
             }
 
             const validity: ?[]const u8 = if (array.null_count > 0)
