@@ -10,8 +10,7 @@ pub const Error = error{
 };
 
 pub const PushError = error{
-    NonBinaryArrayWithDict,
-    UnexpectedElementSize,
+    InvalidInput,
 };
 
 pub const Invalid = error{Invalid};
@@ -483,7 +482,7 @@ pub fn DictFn(comptime W: comptime_int) type {
                 .utf8_view => |*a| {
                     push_binary_view_to_dict(&a.inner, elems);
                 },
-                else => return PushError.NonBinaryArrayWithDict,
+                else => return PushError.InvalidInput,
             }
         }
 
@@ -499,74 +498,72 @@ pub fn DictFn(comptime W: comptime_int) type {
             if (array.null_count > 0) {
                 const validity = (array.validity orelse unreachable).ptr;
 
+                const Closure = struct {
+                    o: *Map,
+                    d: []const T,
+
+                    fn process(self: @This(), idx: u32) void {
+                        self.o.putAssumeCapacity(self.d[idx], 0);
+                    }
+                };
+
+                arrow.bitmap.for_each(
+                    Closure,
+                    Closure.process,
+                    Closure{
+                        .o = out,
+                        .d = data,
+                    },
+                    validity,
+                    array.offset,
+                    array.len,
+                );
+            } else {
                 var item: u32 = array.offset;
                 while (item < array.offset + array.len) : (item += 1) {
-                    if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
+                    const start = array.offsets[item];
+                    const end = array.offsets[item + 1];
+                    const len = end - start;
+                    if (len != W) {
+                        return PushError.InvalidInput;
+                    }
+                }
+
+                const data_raw = array.data[@intCast(array.offsets[array.offset])..@intCast(array.offsets[array.offset + array.len])];
+                const data: []const T = @ptrCast(data_raw);
+
+                for (data) |d| {
+                    out.putAssumeCapacity(d, 0);
+                }
+            }
+        }
+
+        fn push_binary_view_to_dict(
+            array: *const arr.BinaryViewArray,
+            out: *Map,
+        ) void {
+            if (array.len == 0) {
+                return;
+            }
+
+            if (array.null_count > 0) {
+                const validity = (array.validity orelse unreachable).ptr;
+
+                var item: u32 = array.offset;
+                while (item < array.offset + array.len) : (item += 1) {
+                    if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
                         out.putAssumeCapacity(s, 0);
                     }
                 }
             } else {
                 var item: u32 = array.offset;
                 while (item < array.offset + array.len) : (item += 1) {
-                    const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
+                    const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
                     out.putAssumeCapacity(s, 0);
                 }
             }
         }
     };
-}
-
-pub fn count_array_to_dict(array: *const arr.Array) error{NonBinaryArrayWithDict}!usize {
-    switch (array.*) {
-        .binary => |*a| {
-            return a.len - a.null_count;
-        },
-        .large_binary => |*a| {
-            return a.len - a.null_count;
-        },
-        .binary_view => |*a| {
-            return a.len - a.null_count;
-        },
-        .fixed_size_binary => |*a| {
-            return a.len - a.null_count;
-        },
-        .utf8 => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        .large_utf8 => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        .utf8_view => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        else => return error.NonBinaryArrayWithDict,
-    }
-}
-
-fn push_binary_view_to_dict(
-    array: *const arr.BinaryViewArray,
-    out: *DictBuilder,
-) void {
-    if (array.len == 0) {
-        return;
-    }
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                out.putAssumeCapacity(s, 0);
-            }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            out.putAssumeCapacity(s, 0);
-        }
-    }
 }
 
 fn push_fixed_size_binary_to_dict(
@@ -593,6 +590,48 @@ fn push_fixed_size_binary_to_dict(
             out.putAssumeCapacity(s, 0);
         }
     }
+}
+
+pub fn count_array_to_dict(array: *const arr.Array) PushError!usize {
+    switch (array.*) {
+        .binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .large_binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .binary_view => |*a| {
+            return a.len - a.null_count;
+        },
+        .fixed_size_binary => |*a| {
+            return a.len - a.null_count;
+        },
+        .utf8 => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        .large_utf8 => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        .utf8_view => |*a| {
+            return a.inner.len - a.inner.null_count;
+        },
+        else => return PushError.InvalidInput,
+    }
+}
+
+fn copy_validity(
+    v: []const u8,
+    offset: u32,
+    len: u32,
+    alloc: Allocator,
+) error{OutOfMemory}![]const u8 {
+    std.debug.assert(len > 0);
+
+    const n_bytes = arrow.bitmap.num_bytes(len);
+
+    const out = try alloc.alloc(u8, n_bytes);
+
+    arrow.bitmap.copy(len, out, 0, v, offset);
 }
 
 // adapted version of std.hash.XxHash64
@@ -658,19 +697,4 @@ fn Hasher(comptime W: comptime_int) type {
             }
         }
     };
-}
-
-fn copy_validity(
-    v: []const u8,
-    offset: u32,
-    len: u32,
-    alloc: Allocator,
-) error{OutOfMemory}![]const u8 {
-    std.debug.assert(len > 0);
-
-    const n_bytes = arrow.bitmap.num_bytes(len);
-
-    const out = try alloc.alloc(u8, n_bytes);
-
-    arrow.bitmap.copy(len, out, 0, v, offset);
 }
