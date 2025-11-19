@@ -22,7 +22,7 @@ pub fn validate_dict_array(dict_array: *const arr.FixedSizeBinaryArray) Invalid!
         else => return Invalid.Invalid,
     }
 
-    if (dict_array.null_count == 0) {
+    if (dict_array.null_count != 0) {
         return Invalid.Invalid;
     }
 }
@@ -101,19 +101,9 @@ pub fn DictFn(comptime W: comptime_int) type {
             dt: DataType,
             alloc: Allocator,
         ) Error!arr.Array {
-            std.debug.assert(dict_array.byte_width == W);
-            std.debug.assert(dict_array.null_count == 0);
-
             const dict: []const [W]u8 = @ptrCast(
                 dict_array.data[dict_array.offset * W .. (dict_array.len + dict_array.offset) * W],
             );
-
-            if (dict.len > 0) {
-                var idx: u32 = array.offset;
-                while (idx < array.offset + array.len) : (idx += 1) {
-                    std.debug.assert(array.values[idx] < dict.len);
-                }
-            }
 
             return switch (dt) {
                 .binary => .{ .binary = try unpack_dict_to_binary_array(
@@ -164,8 +154,15 @@ pub fn DictFn(comptime W: comptime_int) type {
             array: *const arr.UInt32Array,
             alloc: Allocator,
         ) Error!arr.FixedSizeBinaryArray {
-            const data = try alloc.alloc([W]u8, array.len);
-            @memset(@as([]u8, @ptrCast(data)), 0);
+            if (dict.len == 0) {
+                std.debug.assert(array.null_count == array.len);
+
+                return try arrow.data_type.all_null_fixed_size_binary_array(
+                    W,
+                    array.len,
+                    alloc,
+                );
+            }
 
             const validity: ?[]const u8 = if (array.null_count > 0)
                 try copy_validity(
@@ -176,6 +173,8 @@ pub fn DictFn(comptime W: comptime_int) type {
                 )
             else
                 null;
+
+            const data = try alloc.alloc([W]u8, array.len);
 
             var idx = array.offset;
             var out_idx: u32 = 0;
@@ -203,6 +202,15 @@ pub fn DictFn(comptime W: comptime_int) type {
         ) Error!arr.BinaryViewArray {
             if (W <= 12) {
                 @compileError("unsupported width for unpacking into binview array.");
+            }
+
+            if (dict.len == 0) {
+                std.debug.assert(array.null_count == array.len);
+
+                return try arrow.data_type.all_null_binary_view_array(
+                    array.len,
+                    alloc,
+                );
             }
 
             const validity: ?[]const u8 = if (array.null_count > 0)
@@ -253,6 +261,16 @@ pub fn DictFn(comptime W: comptime_int) type {
             alloc: Allocator,
         ) Error!arr.GenericBinaryArray(index_t) {
             const I = index_t.to_type();
+
+            if (dict.len == 0) {
+                std.debug.assert(array.null_count == array.len);
+
+                return try arrow.data_type.all_null_binary_array(
+                    index_t,
+                    array.len,
+                    alloc,
+                );
+            }
 
             const a = try unpack_dict_to_fixed_size_binary_array(
                 dict,
