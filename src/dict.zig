@@ -462,6 +462,7 @@ fn unpack_field(
 pub fn encode_chunk(
     tables: []const []const arr.Array,
     alloc: Allocator,
+    scratch_alloc: Allocator,
 ) error{OutOfMemory}!struct {
     tables: []const []const arr.Array,
     context: DictContext,
@@ -474,9 +475,9 @@ pub fn encode_chunk(
     }
 
     var dict32builder = DictFn32.Builder.empty;
-    try dict32builder.ensureTotalCapacity(alloc, total_num_rows);
+    try dict32builder.ensureTotalCapacity(scratch_alloc, total_num_rows);
     var dict20builder = DictFn20.Builder.empty;
-    try dict20builder.ensureTotalCapacity(alloc, total_num_rows);
+    try dict20builder.ensureTotalCapacity(scratch_alloc, total_num_rows);
 
     const builder_ctx = BuilderContext{
         .dict32builder = &dict32builder,
@@ -484,7 +485,7 @@ pub fn encode_chunk(
     };
 
     for (tables) |table| {
-        try push_table_to_builders(builder_ctx, table, alloc);
+        try push_table_to_builders(builder_ctx, table, scratch_alloc);
     }
 
     const ctx = DictContext{
