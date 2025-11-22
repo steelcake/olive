@@ -11,7 +11,7 @@ pub const schema = @import("./schema.zig");
 pub const header = @import("./header.zig");
 pub const compression = @import("./compression.zig");
 pub const read = @import("./read.zig");
-const dict = @import("./dict.zig");
+pub const dict = @import("./dict.zig");
 pub const chunk = @import("./chunk.zig");
 pub const fuzz_input = @import("./fuzz_input.zig");
 

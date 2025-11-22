@@ -4,14 +4,14 @@ const Allocator = std.mem.Allocator;
 const arrow = @import("arrow");
 const arr = arrow.array;
 
-const schema_impl = @import("./schema.zig");
-const Schema = schema_impl.Schema;
-const dict_impl = @import("./dict.zig");
+const Schema = @import("./schema.zig").Schema;
+
+const dict_mod = @import("./dict.zig");
+const DictFn32 = dict_mod.DictFn32;
+const DictFn20 = dict_mod.DictFn20;
 
 const Error = error{
     OutOfMemory,
-    NonBinaryArrayWithDict,
-    DictElemInvalidLen,
 };
 
 pub const Table = struct {
@@ -21,8 +21,9 @@ pub const Table = struct {
 
 pub const Chunk = struct {
     tables: []const Table,
-    dicts: []const arr.FixedSizeBinaryArray,
-    schema: *const schema_impl.Schema,
+    schema: *const Schema,
+    dict_32: []const [32]u8,
+    dict_20: []const [20]u8,
 
     pub fn to_arrow(self: *const Chunk, alloc: Allocator) Error![]const []const arr.Array {
         const out = try alloc.alloc([]const arr.Array, self.tables.len);
@@ -175,14 +176,3 @@ pub const Chunk = struct {
         };
     }
 };
-
-fn stringLessThan(_: void, l: [20]u8, r: [20]u8) bool {
-    inline for (0..20) |idx| {
-        if (l[idx] >= r[idx]) {
-            return false;
-        }
-    }
-    return true;
-    // return l < r;
-    // return std.mem.order(u8, l, r) == .lt;
-}
