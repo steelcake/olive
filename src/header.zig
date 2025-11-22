@@ -1,38 +1,8 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const hash_fn = std.hash.XxHash3.hash;
-const xorf = @import("filterz").xorf;
-const arrow = @import("arrow");
-const borsh = @import("borsh");
-
-const Scalar = arrow.scalar.Scalar;
-
 const Compression = @import("./compression.zig").Compression;
-
-pub fn MinMax(comptime T: type) type {
-    return struct { min: T, max: T };
-}
-
-pub const Range = struct {
-    start: u32,
-    end: u32,
-};
 
 pub const Array = union(enum) {
     null: NullArray,
-    i8: Int8Array,
-    i16: Int16Array,
-    i32: Int32Array,
-    i64: Int64Array,
-    i128: Int128Array,
-    i256: Int256Array,
-    u8: UInt8Array,
-    u16: UInt16Array,
-    u32: UInt32Array,
-    u64: UInt64Array,
-    f16: Float16Array,
-    f32: Float32Array,
-    f64: Float64Array,
+    primitive: PrimitiveArray,
     binary: BinaryArray,
     bool: BoolArray,
     list: ListArray,
@@ -73,34 +43,16 @@ pub const IntervalArray = struct {
     len: u32,
 };
 
-pub fn PrimitiveArray(comptime T: type) type {
-    return struct {
-        values: Buffer,
-        validity: ?Buffer,
-        len: u32,
-        minmax: ?[]const ?MinMax(T),
-    };
-}
-
-pub const UInt8Array = PrimitiveArray(u8);
-pub const UInt16Array = PrimitiveArray(u16);
-pub const UInt32Array = PrimitiveArray(u32);
-pub const UInt64Array = PrimitiveArray(u64);
-pub const Int8Array = PrimitiveArray(i8);
-pub const Int16Array = PrimitiveArray(i16);
-pub const Int32Array = PrimitiveArray(i32);
-pub const Int64Array = PrimitiveArray(i64);
-pub const Int128Array = PrimitiveArray(i128);
-pub const Int256Array = PrimitiveArray(i256);
-pub const Float16Array = PrimitiveArray(f16);
-pub const Float32Array = PrimitiveArray(f32);
-pub const Float64Array = PrimitiveArray(f64);
+pub const PrimitiveArray = struct {
+    values: Buffer,
+    validity: ?Buffer,
+    len: u32,
+};
 
 pub const FixedSizeBinaryArray = struct {
     data: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const ?MinMax([]const u8),
 };
 
 pub const DictArray = struct {
@@ -121,7 +73,6 @@ pub const BinaryArray = struct {
     offsets: Buffer,
     validity: ?Buffer,
     len: u32,
-    minmax: ?[]const ?MinMax([]const u8),
 };
 
 pub const StructArray = struct {
@@ -175,93 +126,18 @@ pub const Table = struct {
     num_rows: u32,
 };
 
-pub const Filter = struct {
-    const Fingerprint = u16;
-    const arity = 3;
-
-    header: xorf.Header,
-    fingerprints: []const Fingerprint,
-
-    pub fn hash(key: anytype) u64 {
-        return hash_fn(0, key);
-    }
-
-    pub fn check_hash(self: *const Filter, hash_: u64) bool {
-        return xorf.filter_check(Fingerprint, arity, &self.header, self.fingerprints, hash_);
-    }
-
-    pub fn construct(elems: *const arrow.array.FixedSizeBinaryArray, filter_alloc: Allocator, scratch_alloc: Allocator) xorf.ConstructError!Filter {
-        std.debug.assert(elems.null_count == 0);
-        std.debug.assert(elems.byte_width > 0);
-
-        var hashes = try scratch_alloc.alloc(u64, elems.len);
-
-        var idx: u32 = elems.offset;
-        var i: u32 = 0;
-        while (idx < elems.offset + elems.len) : ({
-            idx += 1;
-            i += 1;
-        }) {
-            hashes[i] = Filter.hash(arrow.get.get_fixed_size_binary(elems.data.ptr, elems.byte_width, idx));
-        }
-
-        hashes = sort_and_dedup_hashes(hashes);
-        var header = xorf.calculate_header(arity, @intCast(hashes.len));
-        const fingerprints = try filter_alloc.alloc(Fingerprint, header.array_length);
-        try xorf.construct_fingerprints(Fingerprint, arity, fingerprints, scratch_alloc, hashes, &header);
-
-        return .{
-            .header = header,
-            .fingerprints = fingerprints,
-        };
-    }
-};
-
 pub const Dict = struct {
-    data: FixedSizeBinaryArray,
-    filter: ?Filter,
+    offset: u32,
+    size: u32,
 };
 
-const SerdeError = error{
-    BorshError,
-    OutOfMemory,
-    /// Buffer isn't big enough to hold the output
-    BufferTooSmall,
+pub const DictContext = struct {
+    dict20: Dict,
+    dict32: Dict,
 };
 
 pub const Header = struct {
     tables: []const Table,
-    dicts: []const Dict,
+    dict_ctx: DictContext,
     data_section_size: u32,
-
-    pub fn deserialize(input: []const u8, alloc: Allocator, max_recursion_depth: u8) SerdeError!Header {
-        return borsh.serde.deserialize(Header, input, alloc, max_recursion_depth) catch |e| {
-            if (e == error.OutOfMemory) return SerdeError.OutOfMemory else return SerdeError.BorshError;
-        };
-    }
-
-    pub fn serialize(self: *const Header, output: []u8, max_recursion_depth: u8) SerdeError!usize {
-        return borsh.serde.serialize(Header, self, output, max_recursion_depth) catch |e| {
-            if (e == error.BufferTooSmall) return SerdeError.BufferTooSmall else return SerdeError.BorshError;
-        };
-    }
 };
-
-/// Ascending sort hashes and deduplicate
-fn sort_and_dedup_hashes(hashes: []u64) []u64 {
-    if (hashes.len == 0) {
-        return hashes;
-    }
-
-    std.mem.sortUnstable(u64, hashes, {}, std.sort.asc(u64));
-    var write_idx: usize = 0;
-
-    for (hashes[1..]) |hash| {
-        if (hash != hashes[write_idx]) {
-            write_idx += 1;
-            hashes[write_idx] = hash;
-        }
-    }
-
-    return hashes[0 .. write_idx + 1];
-}

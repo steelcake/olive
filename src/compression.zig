@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const sys = @cImport({
+    @cDefine("ZSTD_STATIC_LINKING_ONLY", "1");
     @cInclude("zstd.h");
     @cInclude("lz4.h");
     @cInclude("lz4hc.h");
@@ -14,14 +15,18 @@ pub const Compression = union(enum) {
     /// Default lz4 block compression
     lz4,
     /// High compression variant of LZ4, very slow compression speed but same decompression speed as regular lz4.
-    lz4_hc: u8,
+    lz4_hc,
     /// Default zstd block compression
-    zstd: i32,
+    zstd,
 };
+
+const ZSTD_LEVEL = 1;
+const LZ4HC_LEVEL = 3;
 
 pub const Compressor = struct {
     zstd_ctx: *sys.ZSTD_CCtx,
     lz4hc_state: []align(8) u8,
+    zstd_state: []align(8) u8,
 
     pub fn init(alloc: Allocator) error{OutOfMemory}!Compressor {
         const lz4hc_state = try alloc.alignedAlloc(
@@ -29,19 +34,33 @@ pub const Compressor = struct {
             std.mem.Alignment.fromByteUnits(8),
             @intCast(sys.LZ4_sizeofStateHC()),
         );
-        // Can use _advanced function and pass customem to make zstd context use the zig allocator too.
-        // Using simple function to avoid complexity for now
-        const zstd_ctx = sys.ZSTD_createCCtx() orelse unreachable;
+
+        const zstd_ctx_cap = sys.ZSTD_estimateCCtxSize(ZSTD_LEVEL);
+
+        const zstd_state = try alloc.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(8),
+            @intCast(zstd_ctx_cap),
+        );
+
+        const zstd_ctx = sys.ZSTD_initStaticCCtx(zstd_state.ptr, zstd_state.len) orelse {
+            @panic("failed to init zstd compression ctx");
+        };
 
         return .{
             .lz4hc_state = lz4hc_state,
             .zstd_ctx = zstd_ctx,
+            .zstd_state = zstd_state,
         };
     }
 
-    pub fn deinit(self: Compressor, alloc: Allocator) void {
+    pub fn deinit(self: *Compressor, alloc: Allocator) void {
+        hard_assert(sys.ZSTD_isError(sys.ZSTD_freeCCtx(self.zstd_ctx)) == 0);
+        self.zstd_ctx = undefined;
         alloc.free(self.lz4hc_state);
-        std.debug.assert(sys.ZSTD_isError(sys.ZSTD_freeCCtx(self.zstd_ctx)) == 0);
+        self.lz4hc_state = &.{};
+        alloc.free(self.zstd_state);
+        self.zstd_state = &.{};
     }
 
     pub fn compress(self: *Compressor, src: []const u8, dst: []u8, algo: Compression) CompressError!usize {
@@ -53,11 +72,11 @@ pub const Compressor = struct {
             .lz4 => {
                 return try lz4_compress(src, dst);
             },
-            .lz4_hc => |level| {
-                return try lz4_compress_hc(self.lz4hc_state.ptr, src, dst, level);
+            .lz4_hc => {
+                return try lz4_compress_hc(self.lz4hc_state.ptr, src, dst, LZ4HC_LEVEL);
             },
-            .zstd => |level| {
-                return try zstd_compress(self.zstd_ctx, src, dst, level);
+            .zstd => {
+                return try zstd_compress(self.zstd_ctx, src, dst, ZSTD_LEVEL);
             },
         }
     }
@@ -65,17 +84,30 @@ pub const Compressor = struct {
 
 pub const Decompressor = struct {
     zstd_ctx: *sys.ZSTD_DCtx,
+    zstd_state: []align(8) u8,
 
-    pub fn init() Decompressor {
-        const zstd_ctx = sys.ZSTD_createDCtx() orelse unreachable;
+    pub fn init(alloc: Allocator) error{OutOfMemory}!Decompressor {
+        const zstd_ctx_cap = sys.ZSTD_estimateCCtxSize(ZSTD_LEVEL);
+
+        const zstd_state = try alloc.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(8),
+            @intCast(zstd_ctx_cap),
+        );
+
+        const zstd_ctx = sys.ZSTD_initStaticDCtx(zstd_state.ptr, zstd_state.len) orelse {
+            @panic("failed to init zstd decompression ctx");
+        };
 
         return .{
             .zstd_ctx = zstd_ctx,
         };
     }
 
-    pub fn deinit(self: Decompressor) void {
-        std.debug.assert(sys.ZSTD_isError(sys.ZSTD_freeDCtx(self.zstd_ctx)) == 0);
+    pub fn deinit(self: *Decompressor, alloc: Allocator) void {
+        hard_assert(sys.ZSTD_isError(sys.ZSTD_freeDCtx(self.zstd_ctx)) == 0);
+        alloc.free(self.zstd_state);
+        self.zstd_state = &.{};
     }
 
     pub fn decompress(self: *Decompressor, src: []const u8, dst: []u8, algo: Compression) DecompressError!void {
@@ -167,6 +199,13 @@ const CompressError = error{
 const DecompressError = error{
     DecompressFail,
 };
+
+/// Use this for making sure there is a panic even in `ReleaseFast` mode
+fn hard_assert(v: bool) void {
+    if (!v) {
+        @panic("assertion failed");
+    }
+}
 
 test "smoke compression" {
     var arena = ArenaAllocator.init(std.heap.page_allocator);

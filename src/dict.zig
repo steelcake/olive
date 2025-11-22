@@ -1,364 +1,886 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const xxhash3_64 = std.hash.XxHash3.hash;
+
 const arrow = @import("arrow");
 const arr = arrow.array;
 const DataType = arrow.data_type.DataType;
 
-const Error = error{
-    NonBinaryArrayWithDict,
-    OutOfMemory,
+const schema = @import("./schema.zig");
+
+pub fn hash_fixed(comptime W: comptime_int, input: [W]u8) u64 {
+    return xxhash3_64(0, input);
+}
+
+pub fn DictFn(comptime W: comptime_int) type {
+    switch (W) {
+        20, 32 => {},
+        else => @compileError("unsupported width"),
+    }
+
+    return struct {
+        // dictionary value type
+        pub const T = [W]u8;
+
+        const HashMapContext = struct {
+            const Self = @This();
+
+            pub fn hash(self: Self, val: T) u64 {
+                _ = self;
+                return hash_fixed(W, val);
+            }
+
+            pub fn eql(self: Self, a: T, b: T, idx: u32) bool {
+                _ = self;
+                _ = idx;
+                inline for (0..W) |i| {
+                    if (a[i] != b[i]) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        };
+
+        // maps the dictionary value to the index in the dictionary
+        pub const Builder = std.HashMapUnmanaged(
+            T,
+            u32,
+            HashMapContext,
+            std.hash_map.default_max_load_percentage,
+        );
+
+        pub fn unpack_array(
+            noalias dict: []const T,
+            noalias array: *const arr.UInt32Array,
+            alloc: Allocator,
+        ) error{OutOfMemory}!arr.FixedSizeBinaryArray {
+            const data = try alloc.alloc(T, array.len);
+
+            if (dict.len == 0) {
+                std.debug.assert(array.len == array.null_count);
+                @memset(@as([]u8, data), 0);
+            } else {
+                var idx: u32 = 0;
+                while (idx < array.len) : (idx += 1) {
+                    data[idx] = dict[array.values[array.offset + idx]];
+                }
+            }
+
+            const validity = if (array.null_count > 0)
+                try copy_validity(
+                    array.validity orelse unreachable,
+                    array.offset,
+                    array.len,
+                    alloc,
+                )
+            else
+                null;
+
+            return arr.FixedSizeBinaryArray{
+                .offset = 0,
+                .len = array.len,
+                .byte_width = W,
+                .data = @ptrCast(data),
+                .validity = validity,
+                .null_count = array.null_count,
+            };
+        }
+
+        pub fn push_array_to_builder(
+            noalias array: *const arr.FixedSizeBinaryArray,
+            noalias builder: *Builder,
+            alloc: Allocator,
+        ) error{OutOfMemory}!void {
+            std.debug.assert(array.byte_width == W);
+
+            if (array.len == 0) return;
+
+            if (array.null_count > 0) {
+                if (array.null_count == array.len) return;
+                try builder.ensureUnusedCapacity(alloc, array.len - array.null_count);
+
+                const Closure = struct {
+                    a: *const arr.FixedSizeBinaryArray,
+                    b: *Builder,
+
+                    fn process(self: @This(), idx: u32) void {
+                        const byte_offset = idx * W;
+                        self.b.putAssumeCapacity(
+                            self.a.data[byte_offset .. byte_offset + W],
+                        );
+                    }
+                };
+
+                arrow.bitmap.for_each(
+                    Closure,
+                    Closure.process,
+                    Closure{
+                        .a = array,
+                        .b = builder,
+                    },
+                    array.validity,
+                    array.offset,
+                    array.len,
+                );
+            } else {
+                const data: []const T = @ptrCast(array.data[array.offset * W .. (array.offset + array.len) * W]);
+                try builder.ensureUnusedCapacity(alloc, data.len);
+                for (data) |v| {
+                    builder.putAssumeCapacity(v);
+                }
+            }
+        }
+
+        pub fn apply_builder_to_array(
+            noalias builder: *const Builder,
+            noalias array: *const arr.FixedSizeBinaryArray,
+            alloc: Allocator,
+        ) error{OutOfMemory}!arr.UInt32Array {
+            const values = try alloc.alloc(u32, array.len);
+
+            const data: []const T = @ptrCast(
+                array.data[array.offset * W .. (array.offset + array.len) * W],
+            );
+
+            var idx: u32 = 0;
+            while (idx < array.len) : (idx += 1) {
+                values[idx] = builder.get(data[idx]) orelse 0;
+            }
+
+            const validity = if (array.null_count > 0)
+                try copy_validity(
+                    array.validity orelse unreachable,
+                    array.offset,
+                    array.len,
+                    alloc,
+                )
+            else
+                null;
+
+            return arr.UInt32Array{
+                .values = values,
+                .len = array.len,
+                .offset = 0,
+                .validity = validity,
+                .null_count = array.null_count,
+            };
+        }
+
+        pub fn build_dict(
+            noalias builder: *Builder,
+            alloc: Allocator,
+        ) error{OutOfMemory}![]const T {
+            var elems = try alloc.alloc(T, builder.size());
+            var iter = builder.keyIterator();
+            var idx: u32 = 0;
+            while (iter.next()) |v| {
+                elems[idx] = v.*;
+                idx += 1;
+            }
+
+            std.mem.sortUnstable(T, elems, void, less_than_fn);
+
+            idx = 0;
+            for (elems) |v| {
+                builder.putAssumeCapacity(v, idx);
+                idx += 1;
+            }
+
+            return elems;
+        }
+
+        pub fn less_than_fn(_: void, l: T, r: T) bool {
+            inline for (0..W) |idx| {
+                if (l[idx] >= r[idx]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    };
+}
+
+pub const DictFn32 = DictFn(32);
+pub const DictFn20 = DictFn(20);
+
+pub const DictWidths = .{ 20, 32 };
+
+pub const DictContext = struct {
+    dict20: []const [20]u8,
+    dict32: []const [32]u8,
 };
 
-pub fn unpack_dict(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.UInt32Array, dt: DataType, alloc: Allocator) Error!arr.Array {
-    return switch (dt) {
-        .binary => .{ .binary = try unpack_dict_to_binary_array(.i32, dict_array, array, alloc) },
-        .large_binary => .{ .large_binary = try unpack_dict_to_binary_array(.i64, dict_array, array, alloc) },
-        .binary_view => .{ .binary_view = try unpack_dict_to_binary_view_array(dict_array, array, alloc) },
-        .fixed_size_binary => .{ .fixed_size_binary = try unpack_dict_to_fixed_size_binary_array(dict_array, array, alloc) },
-        .utf8 => .{ .utf8 = .{ .inner = try unpack_dict_to_binary_array(.i32, dict_array, array, alloc) } },
-        .large_utf8 => .{ .large_utf8 = .{ .inner = try unpack_dict_to_binary_array(.i64, dict_array, array, alloc) } },
-        .utf8_view => .{ .utf8_view = .{ .inner = try unpack_dict_to_binary_view_array(dict_array, array, alloc) } },
-        else => return Error.NonBinaryArrayWithDict,
-    };
-}
+const BuilderContext = struct {
+    dict32builder: *DictFn32.Builder,
+    dict20builder: *DictFn20.Builder,
+};
 
-fn unpack_dict_to_fixed_size_binary_array(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.UInt32Array, alloc: Allocator) Error!arr.FixedSizeBinaryArray {
-    var builder = arrow.builder.FixedSizeBinaryBuilder.with_capacity(dict_array.byte_width, array.len, array.null_count > 0, alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
+pub fn decode_chunk(
+    ctx: DictContext,
+    chunk_schema: *const schema.Schema,
+    tables: []const []const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}![]const []const arr.Array {
+    if (tables.len == 0) return &.{};
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-        }
+    const tables_o = try alloc.alloc([]const arr.Array, tables.len);
+    for (0..tables.len) |idx| {
+        tables_o[idx] = try unpack_table(
+            ctx,
+            &chunk_schema.table_schemas[idx],
+            tables[idx],
+            alloc,
+        );
     }
 
-    return (builder.finish() catch unreachable);
+    return tables_o;
 }
 
-fn unpack_dict_to_binary_view_array(dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.UInt32Array, alloc: Allocator) Error!arr.BinaryViewArray {
-    const byte_width: u32 = @intCast(dict_array.byte_width);
+fn unpack_table(
+    ctx: DictContext,
+    table_schema: *const schema.TableSchema,
+    table: []const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}![]const arr.Array {
+    if (table.len == 0) return table;
 
-    const buffer_len: u32 = if (byte_width > 12)
-        (array.len - array.null_count) * byte_width
-    else
-        0;
-
-    var builder = arrow.builder.BinaryViewBuilder.with_capacity(buffer_len, array.len, array.null_count > 0, alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-        }
+    var out = try alloc.alloc(arr.Array, table.len);
+    for (0..table.len) |idx| {
+        out[idx] = try apply_builders_to_field(
+            ctx,
+            &table_schema.field_types[idx],
+            &table[idx],
+            alloc,
+        );
     }
 
-    return (builder.finish() catch unreachable);
+    return out;
 }
 
-fn unpack_dict_to_binary_array(comptime index_t: arr.IndexType, dict_array: *const arr.FixedSizeBinaryArray, array: *const arr.UInt32Array, alloc: Allocator) Error!arr.GenericBinaryArray(index_t) {
-    const total_size: u32 = (array.len - array.null_count) * @as(u32, @intCast(dict_array.byte_width));
-
-    var builder = arrow.builder.GenericBinaryBuilder(index_t).with_capacity(total_size, array.len, array.null_count > 0, alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.get.get_primitive_opt(u32, array.values.ptr, validity, idx)) |key| {
-                builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
+fn unpack_field(
+    ctx: DictContext,
+    dt: *const DataType,
+    field: *const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}!arr.Array {
+    switch (dt.*) {
+        .null,
+        .i8,
+        .i16,
+        .i32,
+        .i64,
+        .u8,
+        .u16,
+        .u32,
+        .u64,
+        .f16,
+        .f32,
+        .f64,
+        .binary,
+        .utf8,
+        .bool,
+        .date32,
+        .date64,
+        .interval_year_month,
+        .interval_day_time,
+        .interval_month_day_nano,
+        .large_binary,
+        .large_utf8,
+        .binary_view,
+        .utf8_view,
+        .decimal32,
+        .decimal64,
+        .decimal128,
+        .decimal256,
+        .time32,
+        .time64,
+        .timestamp,
+        .duration,
+        => return field.*,
+        .fixed_size_binary => |bw| {
+            switch (bw) {
+                20 => return .{ .fixed_size_binary = try DictFn20.unpack_array(
+                    ctx.dict20,
+                    &field.u32,
+                    alloc,
+                ) },
+                32 => return .{ .fixed_size_binary = try DictFn32.unpack_array(
+                    ctx.dict32,
+                    &field.u32,
+                    alloc,
+                ) },
+                else => return field.*,
             }
-        }
-    } else {
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const key = arrow.get.get_primitive(u32, array.values.ptr, idx);
-            builder.append_value(arrow.get.get_fixed_size_binary(dict_array.data.ptr, dict_array.byte_width, key +% dict_array.offset)) catch unreachable;
-        }
+        },
+        .list => |a| {
+            var out = field.list;
+
+            out.inner = try unpack_field(
+                ctx,
+                a,
+                out.inner,
+                alloc,
+            );
+
+            return .{ .list = out };
+        },
+        .fixed_size_list => |a| {
+            var out = field.fixed_size_list;
+
+            out.inner = try unpack_field(
+                ctx,
+                &a.inner,
+                out.inner,
+                alloc,
+            );
+
+            return .{ .fixed_size_list = out };
+        },
+        .large_list => |a| {
+            var out = field.large_list;
+
+            out.inner = try unpack_field(
+                ctx,
+                a,
+                out.inner,
+                alloc,
+            );
+
+            return .{ .large_list = out };
+        },
+        .list_view => |a| {
+            var out = field.list_view;
+
+            out.inner = try unpack_field(
+                ctx,
+                a,
+                out.inner,
+                alloc,
+            );
+
+            return .{ .list_view = out };
+        },
+        .large_list_view => |a| {
+            var out = field.large_list_view;
+
+            out.inner = try unpack_field(
+                ctx,
+                a,
+                out.inner,
+                alloc,
+            );
+
+            return .{ .large_list_view = out };
+        },
+        .struct_ => |a| {
+            var out = field.struct_;
+
+            for (a.field_types, out.field_values) |*ft, *fv| {
+                fv.* = try unpack_field(
+                    ctx,
+                    ft,
+                    fv,
+                    alloc,
+                );
+            }
+
+            return .{ .struct_ = out };
+        },
+        .dense_union => |a| {
+            var out = field.dense_union;
+
+            for (out.inner.children, a.field_types) |*fv, *ft| {
+                fv.* = try unpack_field(
+                    ctx,
+                    ft,
+                    fv,
+                    alloc,
+                );
+            }
+
+            return .{ .dense_union = out };
+        },
+        .sparse_union => |a| {
+            var out = field.sparse_union;
+
+            for (out.inner.children, a.field_types) |*fv, *ft| {
+                fv.* = try unpack_field(
+                    ctx,
+                    ft,
+                    fv,
+                    alloc,
+                );
+            }
+
+            return .{ .sparse_union = out };
+        },
+        .map => |a| {
+            var out = field.map;
+
+            const field_names = .{ "keys", "values" };
+            const field_types = .{ a.key.to_data_type(), a.value };
+
+            const st = DataType{
+                .struct_ = .{
+                    .field_names = &field_names,
+                    .field_types = &field_types,
+                },
+            };
+
+            out.entries = (try unpack_field(
+                ctx,
+                &st,
+                &.{ .struct_ = out.entries.* },
+                alloc,
+            )).struct_;
+
+            return .{ .map = out };
+        },
+        .run_end_encoded => |a| {
+            var out = field.run_end_encoded;
+
+            out.values = try unpack_field(
+                ctx,
+                &a.value,
+                out.values,
+                alloc,
+            );
+
+            return .{ .run_end_encoded = out };
+        },
+        .dict => |a| {
+            var out = field.dict;
+
+            out.values = try unpack_field(
+                ctx,
+                &a.value,
+                out.values,
+                alloc,
+            );
+
+            return .{ .dict = out };
+        },
+    }
+}
+
+pub fn encode_chunk(
+    tables: []const []const arr.Array,
+    alloc: Allocator,
+    scratch_alloc: Allocator,
+) error{OutOfMemory}!struct {
+    tables: []const []const arr.Array,
+    context: DictContext,
+} {
+    if (tables.len == 0) return &.{};
+
+    var total_num_rows: u32 = 0;
+    for (tables) |t| {
+        total_num_rows += arrow.length.length(&t[0]);
     }
 
-    return (builder.finish() catch unreachable);
+    var dict32builder = DictFn32.Builder.empty;
+    try dict32builder.ensureTotalCapacity(scratch_alloc, total_num_rows);
+    var dict20builder = DictFn20.Builder.empty;
+    try dict20builder.ensureTotalCapacity(scratch_alloc, total_num_rows);
+
+    const builder_ctx = BuilderContext{
+        .dict32builder = &dict32builder,
+        .dict20builder = &dict20builder,
+    };
+
+    for (tables) |table| {
+        try push_table_to_builders(builder_ctx, table, scratch_alloc);
+    }
+
+    const ctx = DictContext{
+        .dict32 = try DictFn32.build_dict(&dict32builder, alloc),
+        .dict20 = try DictFn20.build_dict(&dict20builder, alloc),
+    };
+
+    const tables_o = try alloc.alloc([]const arr.Array, tables.len);
+    for (0..tables.len) |idx| {
+        tables_o[idx] = try apply_builders_to_table(tables[idx], alloc);
+    }
+
+    return .{
+        .tables = tables_o,
+        .context = ctx,
+    };
 }
 
-const DictLookup = std.StringHashMapUnmanaged(u32);
+fn push_table_to_builders(
+    ctx: BuilderContext,
+    table: []const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}!void {
+    if (table.len == 0) return &.{};
 
-pub fn apply_dict(dict: *const DictLookup, array: *const arr.Array, scratch_alloc: Allocator) Error!arr.UInt32Array {
-    switch (array.*) {
-        .binary => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict, a, scratch_alloc);
-        },
-        .large_binary => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict, a, scratch_alloc);
-        },
-        .binary_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict, a, scratch_alloc);
-        },
+    for (table) |*field| {
+        try push_field_to_builders(
+            ctx,
+            field,
+            alloc,
+        );
+    }
+}
+
+fn push_field_to_builders(
+    ctx: BuilderContext,
+    field: *const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}!void {
+    switch (field.*) {
+        .null,
+        .i8,
+        .i16,
+        .i32,
+        .i64,
+        .u8,
+        .u16,
+        .u32,
+        .u64,
+        .f16,
+        .f32,
+        .f64,
+        .binary,
+        .utf8,
+        .bool,
+        .date32,
+        .date64,
+        .interval_year_month,
+        .interval_day_time,
+        .interval_month_day_nano,
+        .large_binary,
+        .large_utf8,
+        .binary_view,
+        .utf8_view,
+        .decimal32,
+        .decimal64,
+        .decimal128,
+        .decimal256,
+        .time32,
+        .time64,
+        .timestamp,
+        .duration,
+        => {},
         .fixed_size_binary => |*a| {
-            return try apply_dict_to_fixed_size_binary_array(dict, a, scratch_alloc);
-        },
-        .utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i32, dict, &a.inner, scratch_alloc);
-        },
-        .large_utf8 => |*a| {
-            return try apply_dict_to_binary_array(.i64, dict, &a.inner, scratch_alloc);
-        },
-        .utf8_view => |*a| {
-            return try apply_dict_to_binary_view_array(dict, &a.inner, scratch_alloc);
-        },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
-
-fn apply_dict_to_binary_view_array(dict: *const DictLookup, array: *const arr.BinaryViewArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
-    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
+            switch (a.byte_width) {
+                20 => try DictFn20.push_array_to_builder(
+                    a,
+                    ctx.dict20builder,
+                    alloc,
+                ),
+                32 => try DictFn32.push_array_to_builder(
+                    a,
+                    ctx.dict32builder,
+                    alloc,
+                ),
+                else => {},
             }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-        }
-    }
-
-    return (builder.finish() catch unreachable);
-}
-
-fn apply_dict_to_fixed_size_binary_array(dict: *const DictLookup, array: *const arr.FixedSizeBinaryArray, scratch_alloc: Allocator) Error!arr.UInt32Array {
-    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
+        },
+        .list => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.inner,
+                alloc,
+            );
+        },
+        .fixed_size_list => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.inner,
+                alloc,
+            );
+        },
+        .large_list => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.inner,
+                alloc,
+            );
+        },
+        .list_view => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.inner,
+                alloc,
+            );
+        },
+        .large_list_view => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.inner,
+                alloc,
+            );
+        },
+        .struct_ => |*a| {
+            for (a.field_values) |*inner| {
+                try push_field_to_builders(
+                    ctx,
+                    inner,
+                    alloc,
+                );
             }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
-            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-        }
-    }
-
-    return (builder.finish() catch unreachable);
-}
-
-fn apply_dict_to_binary_array(comptime index_t: arr.IndexType, dict: *const DictLookup, array: *const arr.GenericBinaryArray(index_t), scratch_alloc: Allocator) Error!arr.UInt32Array {
-    var builder = arrow.builder.UInt32Builder.with_capacity(array.len, array.null_count > 0, scratch_alloc) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
-                builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
+        },
+        .dense_union => |*a| {
+            for (a.inner.children) |*inner| {
+                try push_field_to_builders(
+                    ctx,
+                    inner,
+                    alloc,
+                );
             }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
-            builder.append_value(find_dict_elem_idx(dict, s) orelse unreachable) catch unreachable;
-        }
+        },
+        .sparse_union => |*a| {
+            for (a.inner.children) |*inner| {
+                try push_field_to_builders(
+                    ctx,
+                    inner,
+                    alloc,
+                );
+            }
+        },
+        .map => |*a| {
+            for (a.entries.field_values) |*inner| {
+                try push_field_to_builders(
+                    ctx,
+                    inner,
+                    alloc,
+                );
+            }
+        },
+        .run_end_encoded => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.values,
+                alloc,
+            );
+        },
+        .dict => |*a| {
+            try push_field_to_builders(
+                ctx,
+                a.values,
+                alloc,
+            );
+        },
+    }
+}
+
+fn apply_builders_to_table(
+    ctx: BuilderContext,
+    table: []const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}![]const arr.Array {
+    if (table.len == 0) return &.{};
+
+    var out = try alloc.alloc(arr.Array, table.len);
+    for (0..table.len) |idx| {
+        out[idx] = try apply_builders_to_field(
+            ctx,
+            &table[idx],
+            alloc,
+        );
     }
 
-    return (builder.finish() catch unreachable);
+    return out;
 }
 
-/// Finds the index of the given element inside the given dict_array
-fn find_dict_elem_idx(dict: *const DictLookup, val: []const u8) ?u32 {
-    return dict.get(val);
-}
-
-pub fn count_array_to_dict(array: *const arr.Array) Error!usize {
-    switch (array.*) {
-        .binary => |*a| {
-            return a.len - a.null_count;
-        },
-        .large_binary => |*a| {
-            return a.len - a.null_count;
-        },
-        .binary_view => |*a| {
-            return a.len - a.null_count;
-        },
+fn apply_builders_to_field(
+    ctx: BuilderContext,
+    field: *const arr.Array,
+    alloc: Allocator,
+) error{OutOfMemory}!arr.Array {
+    switch (field.*) {
+        .null,
+        .i8,
+        .i16,
+        .i32,
+        .i64,
+        .u8,
+        .u16,
+        .u32,
+        .u64,
+        .f16,
+        .f32,
+        .f64,
+        .binary,
+        .utf8,
+        .bool,
+        .date32,
+        .date64,
+        .interval_year_month,
+        .interval_day_time,
+        .interval_month_day_nano,
+        .large_binary,
+        .large_utf8,
+        .binary_view,
+        .utf8_view,
+        .decimal32,
+        .decimal64,
+        .decimal128,
+        .decimal256,
+        .time32,
+        .time64,
+        .timestamp,
+        .duration,
+        => {},
         .fixed_size_binary => |*a| {
-            return a.len - a.null_count;
+            return switch (a.byte_width) {
+                20 => return .{ .u32 = try DictFn20.apply_builder_to_array(
+                    ctx.dict20builder,
+                    a,
+                    alloc,
+                ) },
+                32 => return .{ .u32 = try DictFn32.apply_builder_to_array(
+                    ctx.dict32builder,
+                    a,
+                    alloc,
+                ) },
+                else => return field.*,
+            };
         },
-        .utf8 => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        .large_utf8 => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        .utf8_view => |*a| {
-            return a.inner.len - a.inner.null_count;
-        },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
+        .list => |*a| {
+            var out = a.*;
 
-// u32 is to be used later in to pipeline, just write 0 here
-const DictBuilder = std.StringHashMapUnmanaged(u32);
+            out.inner = try apply_builders_to_field(
+                ctx,
+                a.inner,
+                alloc,
+            );
 
-pub fn push_array_to_dict(array: *const arr.Array, elems: *DictBuilder) Error!void {
-    switch (array.*) {
-        .binary => |*a| {
-            push_binary_to_dict(.i32, a, elems);
+            return .{ .list = out };
         },
-        .large_binary => |*a| {
-            push_binary_to_dict(.i64, a, elems);
-        },
-        .binary_view => |*a| {
-            push_binary_view_to_dict(a, elems);
-        },
-        .fixed_size_binary => |*a| {
-            push_fixed_size_binary_to_dict(a, elems);
-        },
-        .utf8 => |*a| {
-            push_binary_to_dict(.i32, &a.inner, elems);
-        },
-        .large_utf8 => |*a| {
-            push_binary_to_dict(.i64, &a.inner, elems);
-        },
-        .utf8_view => |*a| {
-            push_binary_view_to_dict(&a.inner, elems);
-        },
-        else => return Error.NonBinaryArrayWithDict,
-    }
-}
+        .fixed_size_list => |*a| {
+            var out = a.*;
 
-fn push_binary_to_dict(
-    comptime index_t: arr.IndexType,
-    array: *const arr.GenericBinaryArray(index_t),
-    out: *DictBuilder,
-) void {
-    if (array.len == 0) {
-        return;
-    }
+            out.inner = try apply_builders_to_field(
+                ctx,
+                a.inner,
+                alloc,
+            );
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+            return .{ .fixed_size_list = out };
+        },
+        .large_list => |*a| {
+            var out = a.*;
 
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_opt(index_t, array.data.ptr, array.offsets.ptr, validity, item)) |s| {
-                out.putAssumeCapacity(s, 0);
+            out.inner = try apply_builders_to_field(
+                ctx,
+                a.inner,
+                alloc,
+            );
+
+            return .{ .large_list = out };
+        },
+        .list_view => |*a| {
+            var out = a.*;
+
+            out.inner = try apply_builders_to_field(
+                ctx,
+                a.inner,
+                alloc,
+            );
+
+            return .{ .list_view = out };
+        },
+        .large_list_view => |*a| {
+            var out = a.*;
+
+            out.inner = try apply_builders_to_field(
+                ctx,
+                a.inner,
+                alloc,
+            );
+
+            return .{ .large_list_view = out };
+        },
+        .struct_ => |*a| {
+            var out = a.*;
+
+            for (out.field_values) |*fv| {
+                fv.* = try apply_builders_to_field(
+                    ctx,
+                    fv,
+                    alloc,
+                );
             }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary(index_t, array.data.ptr, array.offsets.ptr, item);
-            out.putAssumeCapacity(s, 0);
-        }
+
+            return .{ .struct_ = out };
+        },
+        .dense_union => |*a| {
+            var out = a.*;
+
+            for (out.inner.children) |*fv| {
+                fv.* = try apply_builders_to_field(
+                    ctx,
+                    fv,
+                    alloc,
+                );
+            }
+
+            return .{ .dense_union = out };
+        },
+        .sparse_union => |*a| {
+            var out = a.*;
+
+            for (out.inner.children) |*fv| {
+                fv.* = try apply_builders_to_field(
+                    ctx,
+                    fv,
+                    alloc,
+                );
+            }
+
+            return .{ .sparse_union = out };
+        },
+        .map => |*a| {
+            var out = a.*;
+
+            out.entries = (try apply_builders_to_field(
+                ctx,
+                &.{ .struct_ = a.entries },
+                alloc,
+            )).struct_;
+
+            return .{ .map = out };
+        },
+        .run_end_encoded => |*a| {
+            var out = a.*;
+
+            out.values = try apply_builders_to_field(
+                ctx,
+                a.values,
+                alloc,
+            );
+
+            return .{ .run_end_encoded = out };
+        },
+        .dict => |*a| {
+            var out = a.*;
+
+            out.values = try apply_builders_to_field(
+                ctx,
+                a.values,
+                alloc,
+            );
+
+            return .{ .dict = out };
+        },
     }
 }
 
-fn push_binary_view_to_dict(
-    array: *const arr.BinaryViewArray,
-    out: *DictBuilder,
-) void {
-    if (array.len == 0) {
-        return;
-    }
+fn copy_validity(
+    v: []const u8,
+    offset: u32,
+    len: u32,
+    alloc: Allocator,
+) error{OutOfMemory}![]const u8 {
+    std.debug.assert(len > 0);
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+    const n_bytes = arrow.bitmap.num_bytes(len);
 
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_binary_view_opt(array.buffers.ptr, array.views.ptr, validity, item)) |s| {
-                out.putAssumeCapacity(s, 0);
-            }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_binary_view(array.buffers.ptr, array.views.ptr, item);
-            out.putAssumeCapacity(s, 0);
-        }
-    }
-}
+    const out = try alloc.alloc(u8, n_bytes);
 
-fn push_fixed_size_binary_to_dict(
-    array: *const arr.FixedSizeBinaryArray,
-    out: *DictBuilder,
-) void {
-    if (array.len == 0) {
-        return;
-    }
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            if (arrow.get.get_fixed_size_binary_opt(array.data.ptr, array.byte_width, validity, item)) |s| {
-                out.putAssumeCapacity(s, 0);
-            }
-        }
-    } else {
-        var item: u32 = array.offset;
-        while (item < array.offset + array.len) : (item += 1) {
-            const s = arrow.get.get_fixed_size_binary(array.data.ptr, array.byte_width, item);
-            out.putAssumeCapacity(s, 0);
-        }
-    }
+    arrow.bitmap.copy(len, out, 0, v, offset);
 }

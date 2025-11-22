@@ -4,11 +4,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const filterz = b.dependency("filterz", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     const zstd = b.dependency("zstd", .{
         .target = target,
         .optimize = optimize,
@@ -24,7 +19,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const borsh = b.dependency("borsh", .{
+    const fuzzin = b.dependency("fuzzin", .{
         .target = target,
         .optimize = optimize,
     });
@@ -34,11 +29,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("filterz", filterz.module("filterz"));
     mod.linkLibrary(zstd.artifact("zstd"));
     mod.linkLibrary(lz4.artifact("lz4"));
     mod.addImport("arrow", arrow.module("arrow"));
-    mod.addImport("borsh", borsh.module("borsh"));
+    mod.addImport("fuzzin", fuzzin.module("fuzzin"));
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -61,6 +55,7 @@ pub fn build(b: *std.Build) void {
     });
     fuzz.root_module.addImport("olive", mod);
     fuzz.root_module.addImport("arrow", arrow.module("arrow"));
+    fuzz.root_module.addImport("fuzzin", fuzzin.module("fuzzin"));
 
     const run_fuzz = b.addRunArtifact(fuzz);
 
