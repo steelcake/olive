@@ -57,9 +57,14 @@ pub fn DictFn(comptime W: comptime_int) type {
         ) error{OutOfMemory}!arr.FixedSizeBinaryArray {
             const data = try alloc.alloc(T, array.len);
 
-            var idx: u32 = 0;
-            while (idx < array.len) : (idx += 1) {
-                data[idx] = dict[array.values[array.offset + idx]];
+            if (dict.len == 0) {
+                std.debug.assert(array.len == array.null_count);
+                @memset(@as([]u8, data), 0);
+            } else {
+                var idx: u32 = 0;
+                while (idx < array.len) : (idx += 1) {
+                    data[idx] = dict[array.values[array.offset + idx]];
+                }
             }
 
             const validity = if (array.null_count > 0)
