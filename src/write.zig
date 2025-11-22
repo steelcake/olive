@@ -2,8 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const arrow = @import("arrow");
 const arr = arrow.array;
-const ArrayList = std.ArrayListUnmanaged;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const header = @import("./header.zig");
 const schema = @import("./schema.zig");
@@ -17,7 +15,6 @@ const Compressor = compression.Compressor;
 pub const Error = error{
     OutOfMemory,
     DataSectionOverflow,
-    FilterConstructFail,
 };
 
 const Context = struct {
@@ -28,6 +25,7 @@ const Context = struct {
     page_size: u32,
     compressor: *Compressor,
     compr_bias: CompressionBias,
+    write_minmax: bool,
 };
 
 pub const CompressionBias = enum {
@@ -42,15 +40,15 @@ pub fn write(params: struct {
     header_alloc: Allocator,
     /// Allocator for allocating temporary memory used for constructing the output
     scratch_alloc: Allocator,
-    /// Allocator for allocating filters, filters won't be built if this argument is null
-    filter_alloc: ?Allocator = null,
     /// For outputting the buffers
     data_section: []u8,
-    /// Targeted page size in kilobytes
+    /// Targeted page size in bytes
     page_size: ?u32 = null,
     /// What to optimize the compression algorihm for.
     ///
-    /// Read optimized heavily optimizes for read speed at the cost of write speed.
+    /// `balanced` is balanced.
+    ///
+    /// `read_optimized` heavily optimizes for read speed at the cost of write speed.
     compression_bias: CompressionBias = .balanced,
 }) Error!header.Header {
     const sch = params.chunk.schema;
@@ -68,41 +66,14 @@ pub fn write(params: struct {
         .page_size = params.page_size orelse 1 << 30,
         .compressor = &compressor,
         .compr_bias = params.compression_bias,
+        .write_minmax = params.write_minmax,
     };
-
     std.debug.assert(ctx.page_size > 0);
 
-    const dicts = try params.header_alloc.alloc(header.Dict, params.chunk.dicts.len);
-
-    for (params.chunk.dicts, sch.dicts, params.compression.dicts, 0..) |*dict, dict_schema, compr, dict_idx| {
-        const dict_array = try write_fixed_size_binary_array(ctx, compr, true, dict);
-
-        if (dict.len > 0) {
-            const filter = if (params.filter_alloc) |filter_alloc| build: {
-                if (dict_schema.has_filter) {
-                    break :build header.Filter.construct(dict, filter_alloc, params.scratch_alloc) catch |e| {
-                        switch (e) {
-                            error.OutOfMemory => return error.OutOfMemory,
-                            error.ConstructFail => return error.FilterConstructFail,
-                            else => unreachable,
-                        }
-                    };
-                } else {
-                    break :build null;
-                }
-            } else null;
-
-            dicts[dict_idx] = header.Dict{
-                .data = dict_array,
-                .filter = filter,
-            };
-        } else {
-            dicts[dict_idx] = header.Dict{
-                .data = dict_array,
-                .filter = null,
-            };
-        }
-    }
+    const dict_ctx = header.DictContext{
+        .dict20 = try write_dict(20, ctx, params.chunk.dict_ctx.dict20),
+        .dict32 = try write_dict(32, ctx, params.chunk.dict_ctx.dict32),
+    };
 
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
@@ -123,10 +94,23 @@ pub fn write(params: struct {
         };
     }
 
-    return .{
-        .dicts = dicts,
+    return header.Header{
+        .dict_ctx = dict_ctx,
         .tables = tables,
         .data_section_size = data_section_size,
+    };
+}
+
+fn write_dict(comptime W: comptime_int, ctx: Context, dict: []const [W]u8) Error!header.FixedSizeBinaryArray {
+    write_fixed_size_binary_array();
+
+    const page_offset = ctx.data_section_size.*;
+    const page_size = try write_page(ctx, .no_compression, @ptrCast(dict));
+    std.debug.assert(page_size == dict.len * W);
+
+    return header.Dict{
+        .offset = page_offset,
+        .size = @intCast(page_size),
     };
 }
 
@@ -1210,18 +1194,7 @@ fn maybe_align_bitmap(bitmap: []const u8, offset: u32, len: u32, alloc: Allocato
     }
 
     const x = try alloc.alloc(u8, (len + 7) / 8);
-    @memset(x, 0);
-
-    var i: u32 = offset;
-    var w_i: u32 = 0;
-    while (i < offset + len) : ({
-        i += 1;
-        w_i += 1;
-    }) {
-        if (arrow.bitmap.get(bitmap.ptr, i)) {
-            arrow.bitmap.set(x.ptr, w_i);
-        }
-    }
+    arrow.bitmap.copy(len, x, 0, bitmap, offset);
 
     return x;
 }
