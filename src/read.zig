@@ -35,6 +35,7 @@ const Context = struct {
     scratch_alloc: Allocator,
     data_section: []const u8,
     decompressor: *Decompressor,
+    dict_ctx: dict_impl.DictContext,
 };
 
 pub fn read(params: struct {
@@ -47,19 +48,32 @@ pub fn read(params: struct {
     var decompressor = Decompressor.init();
     defer decompressor.deinit();
 
+    if (params.header.data_section_size != params.data_section.len) {
+        return Error.ValidationError;
+    }
+
     const ctx = Context{
         .alloc = params.alloc,
         .scratch_alloc = params.scratch_alloc,
         .data_section = params.data_section,
         .decompressor = &decompressor,
+        .dict_ctx = dict_impl.DictContext{
+            .dict20 = try read_dict_data(
+                20,
+                params.data_section,
+                params.header.dict_ctx.dict20,
+                params.alloc,
+            ),
+            .dict32 = try read_dict_data(
+                32,
+                params.data_section,
+                params.header.dict_ctx.dict32,
+                params.alloc,
+            ),
+        },
     };
 
-    if (params.header.data_section_size != params.data_section.len) {
-        return Error.ValidationError;
-    }
-
     const tables = try params.alloc.alloc(chunk.Table, params.schema.tables.len);
-    const dicts = try params.alloc.alloc(arr.FixedSizeBinaryArray, params.schema.dicts.len);
 
     if (params.schema.tables.len != params.header.tables.len) {
         return Error.ValidationError;
@@ -86,57 +100,57 @@ pub fn read(params: struct {
         };
     }
 
-    if (params.schema.dicts.len != params.header.dicts.len) {
-        return Error.ValidationError;
-    }
-    for (params.schema.dicts, params.header.dicts, 0..) |dict_schema, dict_header, dict_idx| {
-        dicts[dict_idx] = try read_fixed_size_binary(ctx, dict_schema.byte_width, &dict_header.data);
-    }
-
     return .{
         .tables = tables,
-        .dicts = dicts,
+        .dicts = ctx.dict_ctx,
         .schema = params.schema,
     };
+}
+
+fn read_dict_data(
+    comptime W: comptime_int,
+    data_section: []const u8,
+    dict_header: header.Dict,
+    alloc: Allocator,
+) Error![]const [W]u8 {
+    if (dict_header.size % W != 0) {
+        return Error.ValidationError;
+    }
+
+    const end, const overflow_bit = @addWithOverflow(dict_header.offset, dict_header.size);
+    if (overflow_bit > 0) {
+        return Error.ValidationError;
+    }
+
+    if (end > data_section.len) {
+        return Error.DataSectionTooSmall;
+    }
+
+    const out = try alloc.alloc(u8, dict_header.size);
+    @memcpy(out, data_section[dict_header.offset..end]);
+
+    return @ptrCast(out);
 }
 
 fn check_field_type(field_type: DataType, field_header: *const header.Array) Error!void {
     const expected: @typeInfo(header.Array).@"union".tag_type.? = switch (field_type) {
         .null => .null,
-        .i8 => .i8,
-        .i16 => .i16,
-        .i32 => .i32,
-        .i64 => .i64,
-        .u8 => .u8,
-        .u16 => .u16,
-        .u32 => .u32,
-        .u64 => .u64,
-        .f16 => .f16,
-        .f32 => .f32,
-        .f64 => .f64,
+        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f16, .f32, .f64, .decimal32, .decimal64, .decimal128, .decimal256, .date32, .date64, .time32, .time64, .timestamp, .interval_year_month, .interval_day_time, .interval_month_day_nano, .duration => .primitive,
         .binary => .binary,
         .utf8 => .binary,
         .bool => .bool,
-        .decimal32 => .i32,
-        .decimal64 => .i64,
-        .decimal128 => .i128,
-        .decimal256 => .i256,
-        .date32 => .i32,
-        .date64 => .i64,
-        .time32 => .i32,
-        .time64 => .i64,
-        .timestamp => .i64,
-        .interval_year_month => .interval_year_month,
-        .interval_day_time => .interval_day_time,
-        .interval_month_day_nano => .interval_month_day_nano,
         .list => .list,
         .struct_ => .struct_,
         .dense_union => .dense_union,
         .sparse_union => .sparse_union,
-        .fixed_size_binary => .fixed_size_binary,
+        .fixed_size_binary => |bw| {
+            switch (bw) {
+                20, 32 => .u32,
+                else => .fixed_size_binary,
+            }
+        },
         .fixed_size_list => .fixed_size_list,
         .map => .map,
-        .duration => .i64,
         .large_binary => .binary,
         .large_utf8 => .binary,
         .large_list => .list,
@@ -157,58 +171,58 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
     try check_field_type(field_type, field_header);
     const array: arr.Array = switch (field_type) {
         .null => .{ .null = .{ .len = field_header.null.len } },
-        .i8 => .{ .i8 = try read_primitive(i8, ctx, &field_header.i8) },
-        .i16 => .{ .i16 = try read_primitive(i16, ctx, &field_header.i16) },
-        .i32 => .{ .i32 = try read_primitive(i32, ctx, &field_header.i32) },
-        .i64 => .{ .i64 = try read_primitive(i64, ctx, &field_header.i64) },
-        .u8 => .{ .u8 = try read_primitive(u8, ctx, &field_header.u8) },
-        .u16 => .{ .u16 = try read_primitive(u16, ctx, &field_header.u16) },
-        .u32 => .{ .u32 = try read_primitive(u32, ctx, &field_header.u32) },
-        .u64 => .{ .u64 = try read_primitive(u64, ctx, &field_header.u64) },
-        .f16 => .{ .f16 = try read_primitive(f16, ctx, &field_header.f16) },
-        .f32 => .{ .f32 = try read_primitive(f32, ctx, &field_header.f32) },
-        .f64 => .{ .f64 = try read_primitive(f64, ctx, &field_header.f64) },
+        .i8 => .{ .i8 = try read_primitive(i8, ctx, &field_header.primitive) },
+        .i16 => .{ .i16 = try read_primitive(i16, ctx, &field_header.primitive) },
+        .i32 => .{ .i32 = try read_primitive(i32, ctx, &field_header.primitive) },
+        .i64 => .{ .i64 = try read_primitive(i64, ctx, &field_header.primitive) },
+        .u8 => .{ .u8 = try read_primitive(u8, ctx, &field_header.primitive) },
+        .u16 => .{ .u16 = try read_primitive(u16, ctx, &field_header.primitive) },
+        .u32 => .{ .u32 = try read_primitive(u32, ctx, &field_header.primitive) },
+        .u64 => .{ .u64 = try read_primitive(u64, ctx, &field_header.primitive) },
+        .f16 => .{ .f16 = try read_primitive(f16, ctx, &field_header.primitive) },
+        .f32 => .{ .f32 = try read_primitive(f32, ctx, &field_header.primitive) },
+        .f64 => .{ .f64 = try read_primitive(f64, ctx, &field_header.primitive) },
         .binary => .{ .binary = try read_binary(.i32, ctx, &field_header.binary) },
         .utf8 => .{ .utf8 = .{ .inner = try read_binary(.i32, ctx, &field_header.binary) } },
         .bool => .{ .bool = try read_bool(ctx, &field_header.bool) },
         .decimal32 => |dec_params| .{ .decimal32 = .{
             .params = dec_params,
-            .inner = try read_primitive(i32, ctx, &field_header.i32),
+            .inner = try read_primitive(i32, ctx, &field_header.primitive),
         } },
         .decimal64 => |dec_params| .{ .decimal64 = .{
             .params = dec_params,
-            .inner = try read_primitive(i64, ctx, &field_header.i64),
+            .inner = try read_primitive(i64, ctx, &field_header.primitive),
         } },
         .decimal128 => |dec_params| .{ .decimal128 = .{
             .params = dec_params,
-            .inner = try read_primitive(i128, ctx, &field_header.i128),
+            .inner = try read_primitive(i128, ctx, &field_header.primitive),
         } },
         .decimal256 => |dec_params| .{ .decimal256 = .{
             .params = dec_params,
-            .inner = try read_primitive(i256, ctx, &field_header.i256),
+            .inner = try read_primitive(i256, ctx, &field_header.primitive),
         } },
         .date32 => .{ .date32 = .{ .inner = try read_primitive(i32, ctx, &field_header.i32) } },
         .date64 => .{ .date64 = .{ .inner = try read_primitive(i64, ctx, &field_header.i64) } },
         .time32 => |unit| .{ .time32 = .{
             .unit = unit,
-            .inner = try read_primitive(i32, ctx, &field_header.i32),
+            .inner = try read_primitive(i32, ctx, &field_header.primitive),
         } },
         .time64 => |unit| .{ .time64 = .{
             .unit = unit,
-            .inner = try read_primitive(i64, ctx, &field_header.i64),
+            .inner = try read_primitive(i64, ctx, &field_header.primitive),
         } },
         .timestamp => |ts| .{ .timestamp = .{
             .ts = ts,
-            .inner = try read_primitive(i64, ctx, &field_header.i64),
+            .inner = try read_primitive(i64, ctx, &field_header.primitive),
         } },
         .interval_year_month => .{
-            .interval_year_month = try read_interval(.year_month, ctx, &field_header.interval_year_month),
+            .interval_year_month = try read_interval(.year_month, ctx, &field_header.primitive),
         },
         .interval_day_time => .{
-            .interval_day_time = try read_interval(.day_time, ctx, &field_header.interval_day_time),
+            .interval_day_time = try read_interval(.day_time, ctx, &field_header.primitive),
         },
         .interval_month_day_nano => .{
-            .interval_month_day_nano = try read_interval(.month_day_nano, ctx, &field_header.interval_month_day_nano),
+            .interval_month_day_nano = try read_interval(.month_day_nano, ctx, &field_header.primitive),
         },
         .list => |inner_t| .{
             .list = try read_list(.i32, ctx, inner_t.*, &field_header.list),
@@ -222,8 +236,18 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
         .sparse_union => |union_t| .{
             .sparse_union = try read_sparse_union(ctx, union_t.*, &field_header.sparse_union),
         },
-        .fixed_size_binary => |byte_width| .{
-            .fixed_size_binary = try read_fixed_size_binary(ctx, byte_width, &field_header.fixed_size_binary),
+        .fixed_size_binary => |byte_width| make_array: {
+            break :make_array switch (byte_width) {
+                20 => .{
+                    .u32 = try read_dict_indices(ctx, @intCast(ctx.dict_ctx.dict20.len), &field_header.primitive),
+                },
+                32 => .{
+                    .u32 = try read_dict_indices(ctx, @intCast(ctx.dict_ctx.dict32.len), &field_header.primitive),
+                },
+                else => .{
+                    .fixed_size_binary = try read_fixed_size_binary(ctx, byte_width, &field_header.fixed_size_binary),
+                },
+            };
         },
         .fixed_size_list => |fsl_t| .{
             .fixed_size_list = try read_fixed_size_list(ctx, fsl_t.*, &field_header.fixed_size_list),
@@ -231,7 +255,7 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
         .map => |map_t| .{ .map = try read_map(ctx, map_t.*, &field_header.map) },
         .duration => |unit| .{ .duration = .{
             .unit = unit,
-            .inner = try read_primitive(i64, ctx, &field_header.i64),
+            .inner = try read_primitive(i64, ctx, &field_header.primitive),
         } },
         .large_binary => .{ .large_binary = try read_binary(.i64, ctx, &field_header.binary) },
         .large_utf8 => .{ .large_utf8 = .{ .inner = try read_binary(.i64, ctx, &field_header.binary) } },
@@ -254,13 +278,9 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
         .dict => |dict_t| .{ .dict = try read_dict(ctx, dict_t.*, &field_header.dict) },
     };
 
-    var timer = std.time.Timer.start() catch unreachable;
-
     arrow.validate.validate(&array) catch {
         return Error.ValidationError;
     };
-
-    std.log.warn("VALIDATE VALDIATE: {}", .{timer.lap() / 1000});
 
     return array;
 }
@@ -412,7 +432,7 @@ fn read_map(ctx: Context, map_type: MapType, field_header: *const header.MapArra
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -452,7 +472,7 @@ fn read_fixed_size_list(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -478,7 +498,7 @@ fn read_fixed_size_binary(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -580,7 +600,7 @@ fn read_struct(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -611,7 +631,7 @@ fn read_list(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -628,7 +648,7 @@ fn read_list(
 fn read_interval(
     comptime interval_t: arr.IntervalType,
     ctx: Context,
-    field_header: *const header.IntervalArray,
+    field_header: *const header.PrimitiveArray,
 ) Error!arr.IntervalArray(interval_t) {
     const T = interval_t.to_type();
 
@@ -638,7 +658,7 @@ fn read_interval(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -660,7 +680,7 @@ fn read_bool(ctx: Context, field_header: *const header.BoolArray) Error!arr.Bool
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -688,7 +708,7 @@ fn read_binary(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
@@ -702,10 +722,37 @@ fn read_binary(
     };
 }
 
+fn read_dict_indices(
+    ctx: Context,
+    dict_len: u32,
+    field_header: *const header.PrimitiveArray,
+) Error!arr.UInt32Array {
+    const array = try read_primitive(u32, ctx, field_header);
+
+    if (dict_len == 0) {
+        if (array.len > array.null_count) {
+            return Error.ValidationError;
+        }
+    } else {
+        const end, const overflow_bit = @addWithOverflow(array.offset, array.len);
+
+        if (overflow_bit > 0) {
+            return Error.ValidationError;
+        }
+
+        const max_idx = std.mem.max(u32, array.values[array.offset..end]);
+        if (max_idx >= dict_len) {
+            return Error.ValidationError;
+        }
+    }
+
+    return array;
+}
+
 fn read_primitive(
     comptime T: type,
     ctx: Context,
-    field_header: *const header.PrimitiveArray(T),
+    field_header: *const header.PrimitiveArray,
 ) Error!arr.PrimitiveArray(T) {
     const len = field_header.len;
 
@@ -713,7 +760,7 @@ fn read_primitive(
     const validity = try read_validity(ctx, field_header.validity, len);
 
     const null_count = if (validity) |v|
-        arrow.bitmap.count_nulls(v, 0, len)
+        arrow.bitmap.count_unset_bits(v, 0, len)
     else
         0;
 
