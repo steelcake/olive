@@ -725,8 +725,16 @@ fn read_binary(
 
     const len = field_header.len;
 
+    if (len > std.math.maxInt(u32) / 2) {
+        return Error.InvalidBufferLen;
+    }
+
     const data = try read_buffer(u8, ctx, field_header.data);
     const offsets = try read_buffer(I, ctx, field_header.offsets);
+
+    if (offsets.len != len + 1) {
+        return Error.InvalidBufferLen;
+    }
 
     const validity = try read_validity(ctx, field_header.validity, len);
 
@@ -797,6 +805,10 @@ fn read_primitive(
 }
 
 fn read_validity(ctx: Context, validity: ?header.Buffer, expected_len: u32) Error!?[]const u8 {
+    if (expected_len > std.math.maxInt(u32) / 2) {
+        return Error.InvalidBufferLen;
+    }
+
     const v = if (validity) |x| x else return null;
     const buf = try read_buffer(u8, ctx, v);
     const expected_num_bytes = (expected_len + 7) / 8;

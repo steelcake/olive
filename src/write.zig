@@ -704,86 +704,26 @@ fn write_binary_view_array(
 ) Error!header.BinaryArray {
     var total_size: i64 = 0;
 
-    if (array.null_count > 0) {
-        const validity = array.validity orelse unreachable;
-
-        const Closure = struct {
-            a: *const arr.BinaryViewArray,
-            tsize: *i64,
-
-            fn process(self: @This(), idx: u32) void {
-                self.tsize.* += @as(i64, @intCast(self.a.views[idx].length));
-            }
-        };
-
-        arrow.bitmap.for_each(
-            Closure,
-            Closure.process,
-            Closure{
-                .a = array,
-                .tsize = &total_size,
-            },
-            validity,
-            array.offset,
-            array.len,
-        );
-    } else {
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            total_size += @as(i64, @intCast(array.views[idx].length));
-        }
+    var idx: u32 = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        total_size += @as(i64, @intCast(array.views[idx].length));
     }
 
     const data = try ctx.scratch_alloc.alloc(u8, @intCast(total_size));
     const offsets = try ctx.scratch_alloc.alloc(i64, array.len + 1);
     offsets[0] = 0;
 
-    if (array.null_count > 0) {
-        const validity = array.validity orelse unreachable;
-
-        const Closure = struct {
-            a: *const arr.BinaryViewArray,
-            of: []i64,
-            d: []u8,
-
-            fn process(self: @This(), idx: u32) void {
-                const s = arrow.get.get_binary_view(
-                    self.a.buffers,
-                    self.a.views,
-                    idx,
-                );
-                const start_offset = self.of[idx - self.a.offset];
-                const end_offset = start_offset + @as(i64, @intCast(s.len));
-                @memcpy(self.d[@intCast(start_offset)..@intCast(end_offset)], s);
-                self.of[idx - self.a.offset + 1] = end_offset;
-            }
-        };
-
-        arrow.bitmap.for_each(
-            Closure,
-            Closure.process,
-            Closure{
-                .a = array,
-                .of = offsets,
-                .d = data,
-            },
-            validity,
-            array.offset,
-            array.len,
+    idx = array.offset;
+    while (idx < array.offset + array.len) : (idx += 1) {
+        const s = arrow.get.get_binary_view(
+            array.buffers,
+            array.views,
+            idx,
         );
-    } else {
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const s = arrow.get.get_binary_view(
-                array.buffers,
-                array.views,
-                idx,
-            );
-            const start_offset = offsets[idx - array.offset];
-            const end_offset = start_offset + @as(i64, @intCast(s.len));
-            @memcpy(data[@intCast(start_offset)..@intCast(end_offset)], s);
-            offsets[idx - array.offset + 1] = end_offset;
-        }
+        const start_offset = offsets[idx - array.offset];
+        const end_offset = start_offset + @as(i64, @intCast(s.len));
+        @memcpy(data[@intCast(start_offset)..@intCast(end_offset)], s);
+        offsets[idx - array.offset + 1] = end_offset;
     }
 
     const validity = if (array.null_count > 0)
