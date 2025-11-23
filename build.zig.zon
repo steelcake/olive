@@ -13,8 +13,8 @@
             .hash = "lz4-1.10.0-6-ewyzw-4NAAAWDpY4xpiqr4LQhZQAC0x_rGnW2iPh6jk2",
         },
         .arrow = .{
-            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.32.tar.gz",
-            .hash = "arrow-0.0.32-ZFEaqF4ZBQCzkSt5YRccKX5FnvwYcweEG196ptktafka",
+            .url = "https://github.com/steelcake/arrow-zig/archive/refs/tags/v0.0.33.tar.gz",
+            .hash = "arrow-0.0.33-ZFEaqLAeBQDVp6V8EXYPk_p7SBYNiYMX6lsHcsAX79sp",
         },
         .fuzzin = .{
             .url = "https://github.com/steelcake/fuzzin/archive/refs/tags/v0.0.10.tar.gz",

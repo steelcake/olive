@@ -25,7 +25,6 @@ const Context = struct {
     page_size: u32,
     compressor: *Compressor,
     compr_bias: CompressionBias,
-    write_minmax: bool,
 };
 
 pub const CompressionBias = enum {
@@ -51,8 +50,6 @@ pub fn write(params: struct {
     /// `read_optimized` heavily optimizes for read speed at the cost of write speed.
     compression_bias: CompressionBias = .balanced,
 }) Error!header.Header {
-    const sch = params.chunk.schema;
-
     var compressor = try compression.Compressor.init(params.scratch_alloc);
     defer compressor.deinit(params.scratch_alloc);
 
@@ -66,7 +63,6 @@ pub fn write(params: struct {
         .page_size = params.page_size orelse 1 << 30,
         .compressor = &compressor,
         .compr_bias = params.compression_bias,
-        .write_minmax = params.write_minmax,
     };
     std.debug.assert(ctx.page_size > 0);
 
@@ -81,9 +77,8 @@ pub fn write(params: struct {
         const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
 
         for (table.fields, 0..) |*array, field_idx| {
-            fields[field_idx] = try write_field(
+            fields[field_idx] = try write_array(
                 ctx,
-                sch.tables[table_idx].has_minmax_index[field_idx],
                 array,
             );
         }
@@ -101,9 +96,7 @@ pub fn write(params: struct {
     };
 }
 
-fn write_dict(comptime W: comptime_int, ctx: Context, dict: []const [W]u8) Error!header.FixedSizeBinaryArray {
-    write_fixed_size_binary_array();
-
+fn write_dict(comptime W: comptime_int, ctx: Context, dict: []const [W]u8) Error!header.Dict {
     const page_offset = ctx.data_section_size.*;
     const page_size = try write_page(ctx, .no_compression, @ptrCast(dict));
     std.debug.assert(page_size == dict.len * W);
@@ -114,9 +107,8 @@ fn write_dict(comptime W: comptime_int, ctx: Context, dict: []const [W]u8) Error
     };
 }
 
-fn write_field(
+fn write_array(
     ctx: Context,
-    has_minmax_index: bool,
     array: *const arr.Array,
 ) Error!header.Array {
     switch (array.*) {
@@ -124,95 +116,77 @@ fn write_field(
         .i8 => |*a| return .{ .i8 = try write_primitive_array(
             i8,
             ctx,
-            has_minmax_index,
             a,
         ) },
-        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, ctx, has_minmax_index, a) },
-        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, ctx, has_minmax_index, a) },
-        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, ctx, has_minmax_index, a) },
-        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, ctx, has_minmax_index, a) },
-        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, ctx, has_minmax_index, a) },
-        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, ctx, has_minmax_index, a) },
-        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, ctx, has_minmax_index, a) },
-        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, ctx, has_minmax_index, a) },
-        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, ctx, has_minmax_index, a) },
-        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, ctx, has_minmax_index, a) },
-        .binary => |*a| return .{ .binary = try write_binary_array(.i32, .{
-            .ctx = ctx,
-            .has_minmax_index = has_minmax_index,
-            .array = a,
-        }) },
-        .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, .{
-            .ctx = ctx,
-            .has_minmax_index = has_minmax_index,
-            .array = &a.inner,
-        }) },
+        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, ctx, a) },
+        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, ctx, a) },
+        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, ctx, a) },
+        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, ctx, a) },
+        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, ctx, a) },
+        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, ctx, a) },
+        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, ctx, a) },
+        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, ctx, a) },
+        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, ctx, a) },
+        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, ctx, a) },
+        .binary => |*a| return .{ .binary = try write_binary_array(.i32, ctx, a) },
+        .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, ctx, a) },
         .bool => |*a| return .{ .bool = try write_bool_array(ctx, a) },
         .decimal32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .decimal64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .decimal128 => |*a| return .{ .i128 = try write_primitive_array(
             i128,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .decimal256 => |*a| return .{ .i256 = try write_primitive_array(
             i256,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .date32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .date64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .time32 => |*a| return .{ .i32 = try write_primitive_array(
             i32,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .time64 => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .timestamp => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
-        .interval_year_month => |*a| return .{ .interval_year_month = try write_interval_array(
+        .interval_year_month => |*a| return .{ .interval_year_month = try write_primitive_array(
             i32,
             ctx,
             &a.inner,
         ) },
-        .interval_day_time => |*a| return .{ .interval_day_time = try write_interval_array(
+        .interval_day_time => |*a| return .{ .interval_day_time = try write_primitive_array(
             [2]i32,
             ctx,
             &a.inner,
         ) },
-        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_interval_array(
+        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_primitive_array(
             arr.MonthDayNano,
             ctx,
             &a.inner,
@@ -223,7 +197,6 @@ fn write_field(
         .sparse_union => |*a| return .{ .sparse_union = try write_sparse_union_array(ctx, a) },
         .fixed_size_binary => |*a| return .{ .fixed_size_binary = try write_fixed_size_binary_array(
             ctx,
-            has_minmax_index,
             a,
         ) },
         .fixed_size_list => |*a| return .{ .fixed_size_list = try write_fixed_size_list_array(
@@ -234,42 +207,24 @@ fn write_field(
         .duration => |*a| return .{ .i64 = try write_primitive_array(
             i64,
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
-        .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, .{
-            .ctx = ctx,
-            .has_minmax_index = has_minmax_index,
-            .array = a,
-        }) },
-        .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, .{
-            .ctx = ctx,
-            .has_minmax_index = has_minmax_index,
-            .array = &a.inner,
-        }) },
+        .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, ctx, a) },
+        .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, ctx, a) },
         .large_list => |*a| return .{ .list = try write_list_array(.i64, ctx, a) },
         .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(ctx, a) },
         .binary_view => |*a| return .{ .binary = try write_binary_view_array(
             ctx,
-            has_minmax_index,
             a,
         ) },
         .utf8_view => |*a| return .{ .binary = try write_binary_view_array(
             ctx,
-            has_minmax_index,
             &a.inner,
         ) },
         .list_view => |*a| return .{ .list = try write_list_view_array(.i32, ctx, a) },
         .large_list_view => |*a| return .{ .list = try write_list_view_array(.i64, ctx, a) },
         .dict => |*a| return .{ .dict = try write_dict_array(ctx, a) },
     }
-}
-
-fn write_array(
-    ctx: Context,
-    array: *const arr.Array,
-) Error!header.Array {
-    return try write_field(ctx, false, array);
 }
 
 fn write_list_view_array(
@@ -726,7 +681,6 @@ fn write_bool_array(
 
 fn write_fixed_size_binary_array(
     ctx: Context,
-    has_minmax_index: bool,
     array: *const arr.FixedSizeBinaryArray,
 ) Error!header.FixedSizeBinaryArray {
     const byte_width: u32 = @intCast(array.byte_width);
@@ -743,104 +697,120 @@ fn write_fixed_size_binary_array(
         .validity_opt = array.validity,
     });
 
-    var minmax: ?[]const ?header.MinMax([]const u8) = null;
-    if (has_minmax_index) {
-        const mm = try ctx.header_alloc.alloc(?header.MinMax([]const u8), data.row_index_ends.len);
-
-        var page_start: u32 = 0;
-        for (data.row_index_ends, 0..) |page_end, page_idx| {
-            const page_data = arrow.slice.slice_fixed_size_binary(array, page_start, page_end - page_start);
-
-            if (page_data.null_count == page_data.len) {
-                mm[page_idx] = null;
-                continue;
-            }
-
-            const min = try copy_str(
-                arrow.minmax.minmax_fixed_size_binary(.min, &page_data) orelse unreachable,
-                ctx.header_alloc,
-            );
-            const max = try copy_str(
-                arrow.minmax.minmax_fixed_size_binary(.max, &page_data) orelse unreachable,
-                ctx.header_alloc,
-            );
-            mm[page_idx] = .{ .min = min, .max = max };
-            page_start = page_end;
-        }
-        minmax = mm;
-    }
-
     return .{
         .data = data,
         .validity = validity,
         .len = array.len,
-        .minmax = minmax,
     };
 }
 
 fn write_binary_view_array(
     ctx: Context,
-    has_minmax_index: bool,
     array: *const arr.BinaryViewArray,
 ) Error!header.BinaryArray {
-    var total_size: u32 = 0;
+    var total_size: i64 = 0;
 
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
 
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.bitmap.get(validity, idx)) {
-                total_size += @as(u32, @bitCast(array.views[idx].length));
+        const Closure = struct {
+            a: *const arr.BinaryViewArray,
+            tsize: *u32,
+
+            fn process(self: @This(), idx: u32) void {
+                self.tsize += @as(i64, @intCast(self.a.views[idx].length));
             }
-        }
+        };
+
+        arrow.bitmap.for_each(
+            Closure,
+            Closure.process,
+            Closure{
+                .a = array,
+                .tsize = &total_size,
+            },
+            validity,
+            array.offset,
+            array.len,
+        );
     } else {
         var idx: u32 = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
-            total_size += @as(u32, @bitCast(array.views[idx].length));
+            total_size += @as(i64, @intCast(array.views[idx].length));
         }
     }
 
-    var builder = arrow.builder.LargeBinaryBuilder.with_capacity(
-        total_size,
-        array.len,
-        array.null_count > 0,
-        ctx.scratch_alloc,
-    ) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
+    const data = try ctx.scratch_alloc.alloc(u8, @intCast(total_size));
+    const offsets = try ctx.scratch_alloc.alloc(i64, array.len + 1);
+    offsets[0] = 0;
 
     if (array.null_count > 0) {
         const validity = (array.validity orelse unreachable).ptr;
 
-        var idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_option(arrow.get.get_binary_view_opt(
-                array.buffers.ptr,
-                array.views.ptr,
-                validity,
-                idx,
-            )) catch unreachable;
-        }
+        const Closure = struct {
+            a: *const arr.BinaryViewArray,
+            tsize: *u32,
+
+            fn process(self: @This(), idx: u32) void {
+                self.tsize += @as(i64, @intCast(self.a.views[idx].length));
+                const s = arrow.get.get_binary_view(
+                    array.buffers.ptr,
+                    array.views.ptr,
+                    idx,
+                );
+                const start_offset = offsets[idx - array.offset];
+                const end_offset = start_offset + @as(i64, @intCast(s.len));
+                @memcpy(data[@intCast(start_offset)..@intCast(end_offset)], s);
+                offsets[idx - array.offset + 1] = end_offset;
+            }
+        };
+
+        arrow.bitmap.for_each(
+            Closure,
+            Closure.process,
+            Closure{
+                .a = array,
+                .tsize = &total_size,
+            },
+            validity,
+            array.offset,
+            array.len,
+        );
     } else {
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_value(arrow.get.get_binary_view(
+            const s = arrow.get.get_binary_view(
                 array.buffers.ptr,
                 array.views.ptr,
                 idx,
-            )) catch unreachable;
+            );
+            const start_offset = offsets[idx - array.offset];
+            const end_offset = start_offset + @as(i64, @intCast(s.len));
+            @memcpy(data[@intCast(start_offset)..@intCast(end_offset)], s);
+            offsets[idx - array.offset + 1] = end_offset;
         }
     }
 
-    const bin_array = builder.finish() catch unreachable;
+    const validity = if (array.null_count > 0)
+        try maybe_align_bitmap(
+            array.validity orelse unreachable,
+            array.offset,
+            array.len,
+            ctx.scratch_alloc,
+        )
+    else
+        null;
 
     return try write_binary_array(
         .i64,
-        .{
-            .ctx = ctx,
-            .has_minmax_index = has_minmax_index,
-            .array = &bin_array,
+        ctx,
+        &arr.BinaryArray{
+            .len = array.len,
+            .data = data,
+            .offset = 0,
+            .offsets = offsets,
+            .validity = validity,
+            .null_count = array.null_count,
         },
     );
 }
@@ -853,44 +823,16 @@ fn empty_buffer() header.Buffer {
     };
 }
 
-fn write_interval_array(
-    comptime T: type,
-    ctx: Context,
-    array: *const arr.PrimitiveArray(T),
-) Error!header.IntervalArray {
-    const values = try write_buffer(
-        ctx,
-        .lz4,
-        @ptrCast(array.values[array.offset .. array.offset + array.len]),
-        @sizeOf(T),
-    );
-    const validity = try write_validity(.{
-        .ctx = ctx,
-        .offset = array.offset,
-        .len = array.len,
-        .null_count = array.null_count,
-        .validity_opt = array.validity,
-    });
-
-    return .{
-        .values = values,
-        .validity = validity,
-        .len = array.len,
-    };
-}
-
 fn write_primitive_array(
     comptime T: type,
     ctx: Context,
-    has_minmax_index: bool,
     array: *const arr.PrimitiveArray(T),
-) Error!header.PrimitiveArray(T) {
+) Error!header.PrimitiveArray {
     if (array.len == 0) {
         return .{
             .values = empty_buffer(),
             .validity = null,
             .len = 0,
-            .minmax = null,
         };
     }
 
@@ -908,119 +850,56 @@ fn write_primitive_array(
         .validity_opt = array.validity,
     });
 
-    var minmax: ?[]const ?header.MinMax(T) = null;
-    if (has_minmax_index) {
-        const mm = try ctx.header_alloc.alloc(?header.MinMax(T), values.row_index_ends.len);
-
-        var start: u32 = 0;
-        for (values.row_index_ends, 0..) |end, page_idx| {
-            const page_data = arrow.slice.slice_primitive(T, array, start, end - start);
-
-            if (page_data.null_count == page_data.len) {
-                mm[page_idx] = null;
-                continue;
-            }
-
-            const min = arrow.minmax.minmax_primitive(.min, T, &page_data) orelse unreachable;
-            const max = arrow.minmax.minmax_primitive(.max, T, &page_data) orelse unreachable;
-
-            mm[page_idx] = .{ .min = min, .max = max };
-
-            start = end;
-        }
-
-        minmax = mm;
-    }
-
     return .{
         .values = values,
         .validity = validity,
         .len = array.len,
-        .minmax = minmax,
     };
 }
 
 fn write_binary_array(
     comptime index_t: arr.IndexType,
-    params: struct {
-        ctx: Context,
-        has_minmax_index: bool,
-        array: *const arr.GenericBinaryArray(index_t),
-    },
+    ctx: Context,
+    array: *const arr.GenericBinaryArray(index_t),
 ) Error!header.BinaryArray {
     const I = index_t.to_type();
 
     const data = try write_buffer_with_offsets(
         I,
-        params.ctx,
-        switch (params.ctx.compr_bias) {
+        ctx,
+        switch (ctx.compr_bias) {
             .balanced => .zstd,
             .read_optimized => .lz4_hc,
         },
-        params.array.data,
-        params.array.offsets[params.array.offset .. params.array.offset + params.array.len + 1],
+        array.data,
+        array.offsets[array.offset .. array.offset + array.len + 1],
     );
 
     const normalized_offsets = try normalize_offsets(
         index_t.to_type(),
-        params.array.offsets[params.array.offset .. params.array.offset + params.array.len + 1],
-        params.ctx.scratch_alloc,
+        array.offsets[array.offset .. array.offset + array.len + 1],
+        ctx.scratch_alloc,
     );
     const offsets = try write_buffer(
-        params.ctx,
+        ctx,
         .lz4,
-        @ptrCast(normalized_offsets[0 .. params.array.len + 1]),
+        @ptrCast(normalized_offsets[0 .. array.len + 1]),
         @sizeOf(I),
     );
 
     const validity = try write_validity(.{
-        .ctx = params.ctx,
-        .offset = params.array.offset,
-        .len = params.array.len,
-        .null_count = params.array.null_count,
-        .validity_opt = params.array.validity,
+        .ctx = ctx,
+        .offset = array.offset,
+        .len = array.len,
+        .null_count = array.null_count,
+        .validity_opt = array.validity,
     });
-
-    var minmax: ?[]const ?header.MinMax([]const u8) = null;
-    if (params.has_minmax_index) {
-        const mm = try params.ctx.header_alloc.alloc(
-            ?header.MinMax([]const u8),
-            data.row_index_ends.len,
-        );
-
-        var page_start: u32 = 0;
-        for (data.row_index_ends, 0..) |page_end, page_idx| {
-            const page_data = arrow.slice.slice_binary(
-                index_t,
-                params.array,
-                page_start,
-                page_end - page_start,
-            );
-
-            if (page_data.null_count == page_data.len) {
-                mm[page_idx] = null;
-                continue;
-            }
-            const min = try copy_str(
-                arrow.minmax.minmax_binary(.min, index_t, &page_data) orelse unreachable,
-                params.ctx.header_alloc,
-            );
-            const max = try copy_str(
-                arrow.minmax.minmax_binary(.max, index_t, &page_data) orelse unreachable,
-                params.ctx.header_alloc,
-            );
-            mm[page_idx] = .{ .min = min, .max = max };
-            page_start = page_end;
-        }
-        minmax = mm;
-    }
 
     return .{
         .data = data,
         .offsets = offsets,
-        .len = params.array.len,
+        .len = array.len,
         .validity = validity,
-        .minmax = minmax,
     };
 }
 
@@ -1143,12 +1022,6 @@ fn write_buffer(ctx: Context, compr: Compression, buffer: []const u8, elem_size:
         .pages = pages,
         .row_index_ends = row_index_ends,
     };
-}
-
-fn copy_str(str: []const u8, alloc: Allocator) Error![]const u8 {
-    const out = try alloc.alloc(u8, str.len);
-    @memcpy(out, str);
-    return out;
 }
 
 fn normalize_offsets(comptime T: type, offsets: []const T, scratch_alloc: Allocator) Error![]const T {

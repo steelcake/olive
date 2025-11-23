@@ -55,7 +55,7 @@ pub const Compressor = struct {
     }
 
     pub fn deinit(self: *Compressor, alloc: Allocator) void {
-        hard_assert(sys.ZSTD_isError(sys.ZSTD_freeCCtx(self.zstd_ctx)) == 0);
+        // hard_assert(sys.ZSTD_isError(sys.ZSTD_freeCCtx(self.zstd_ctx)) == 0);
         self.zstd_ctx = undefined;
         alloc.free(self.lz4hc_state);
         self.lz4hc_state = &.{};
@@ -101,11 +101,12 @@ pub const Decompressor = struct {
 
         return .{
             .zstd_ctx = zstd_ctx,
+            .zstd_state = zstd_state,
         };
     }
 
     pub fn deinit(self: *Decompressor, alloc: Allocator) void {
-        hard_assert(sys.ZSTD_isError(sys.ZSTD_freeDCtx(self.zstd_ctx)) == 0);
+        // hard_assert(sys.ZSTD_isError(sys.ZSTD_freeDCtx(self.zstd_ctx)) == 0);
         alloc.free(self.zstd_state);
         self.zstd_state = &.{};
     }
@@ -214,8 +215,8 @@ test "smoke compression" {
 
     var compressor = try Compressor.init(alloc);
     defer compressor.deinit(alloc);
-    var decompressor = Decompressor.init();
-    defer decompressor.deinit();
+    var decompressor = try Decompressor.init(alloc);
+    defer decompressor.deinit(alloc);
 
     const input = &.{ 1, 2, 3, 4, 5, 6, 7 };
 
