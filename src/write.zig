@@ -232,49 +232,22 @@ fn write_list_view_array(
     ctx: Context,
     array: *const arr.GenericListViewArray(index_t),
 ) Error!header.ListArray {
-    var builder = arrow.builder.GenericListBuilder(index_t).with_capacity(
-        array.len,
-        array.null_count > 0,
-        ctx.scratch_alloc,
-    ) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
+    const I = index_t.to_type();
 
-    const inner_arrays_builder = try ctx.scratch_alloc.alloc(arr.Array, array.len);
-    var num_inner_arrays: u32 = 0;
+    const offsets = try ctx.scratch_alloc.alloc(I, array.len + 1);
+    offsets[0] = 0;
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+    const inner_arrays = try ctx.scratch_alloc.alloc(arr.Array, array.len);
 
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.bitmap.get(validity, idx)) {
-                builder.append_item(array.sizes.ptr[idx]) catch unreachable;
-
-                inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(
-                    array.inner,
-                    @intCast(array.offsets[idx]),
-                    @intCast(array.sizes[idx]),
-                );
-                num_inner_arrays += 1;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_item(array.sizes.ptr[idx]) catch unreachable;
-            inner_arrays_builder[num_inner_arrays] = arrow.slice.slice(
-                array.inner,
-                @intCast(array.offsets[idx]),
-                @intCast(array.sizes[idx]),
-            );
-            num_inner_arrays += 1;
-        }
+    var idx: u32 = 0;
+    var current_offset: I = 0;
+    while (idx < array.len) : (idx += 1) {
+        const size = array.sizes[idx + array.offset];
+        const offset = array.offsets[idx + array.offset];
+        inner_arrays[idx] = arrow.slice.slice(array.inner, @intCast(offset), @intCast(size));
+        current_offset += size;
+        offsets[idx + 1] = current_offset;
     }
-
-    const inner_arrays = inner_arrays_builder[0..num_inner_arrays];
 
     const inner_dt = arrow.data_type.get_data_type(array.inner, ctx.scratch_alloc) catch |e| {
         if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
@@ -282,7 +255,23 @@ fn write_list_view_array(
     const inner = try ctx.scratch_alloc.create(arr.Array);
     inner.* = try arrow.concat.concat(inner_dt, inner_arrays, ctx.scratch_alloc, ctx.scratch_alloc);
 
-    const list_array = builder.finish(inner) catch unreachable;
+    const validity = if (array.null_count > 0)
+        try maybe_align_bitmap(
+            array.validity orelse unreachable,
+            array.offset,
+            array.len,
+            ctx.scratch_alloc,
+        )
+    else
+        null;
+
+    const list_array = arr.GenericListArray(index_t){
+        .inner = inner,
+        .offset = 0,
+        .len = array.len,
+        .offsets = offsets,
+        .validity = validity,
+    };
 
     return try write_list_array(index_t, ctx, &list_array);
 }
