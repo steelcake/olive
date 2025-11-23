@@ -328,39 +328,39 @@ fn read_list_view(
         return Error.ValidationError;
     };
 
-    var builder = arrow.builder.GenericListViewBuilder(index_t).with_capacity(
-        array.len,
-        array.null_count > 0,
-        ctx.alloc,
-    ) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
-    };
+    const I = index_t.to_type();
 
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+    const offsets = try ctx.alloc.alloc(I, array.len);
+    const sizes = try ctx.alloc.alloc(I, array.len);
 
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            if (arrow.bitmap.get(validity, idx)) {
-                const start = array.offsets.ptr[idx];
-                const end = array.offsets.ptr[idx + 1];
-                const len = end - start;
-                builder.append_item(start, len) catch unreachable;
-            } else {
-                builder.append_null() catch unreachable;
-            }
-        }
-    } else {
-        var idx: u32 = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            const start = array.offsets.ptr[idx];
-            const end = array.offsets.ptr[idx + 1];
-            const len = end - start;
-            builder.append_item(start, len) catch unreachable;
-        }
+    var idx = array.offset;
+    var start = array.offsets[array.offset];
+    while (idx < array.offset + array.len) : (idx += 1) {
+        const end = array.offsets[idx + 1];
+        offsets[idx - array.offset] = start;
+        sizes[idx - array.offset] = end - start;
+        start = end;
     }
 
-    return builder.finish(array.inner) catch unreachable;
+    const validity = if (array.null_count > 0)
+        try maybe_align_bitmap(
+            array.validity orelse unreachable,
+            array.offset,
+            array.len,
+            ctx.alloc,
+        )
+    else
+        null;
+
+    return arr.GenericListViewArray(index_t){
+        .validity = validity,
+        .offset = 0,
+        .len = array.len,
+        .inner = array.inner,
+        .offsets = offsets,
+        .sizes = sizes,
+        .null_count = array.null_count,
+    };
 }
 
 fn read_binary_view(ctx: Context, field_header: *const header.BinaryArray) Error!arr.BinaryViewArray {
@@ -844,4 +844,19 @@ fn read_buffer(comptime T: type, ctx: Context, buffer: header.Buffer) Error![]co
     }
 
     return out;
+}
+
+// Aligns the given bitmap by allocating new memory using alloc and copying over the bits
+//  if bitmap isn't already aligned (offset is multiple of 8)
+fn maybe_align_bitmap(bitmap: []const u8, offset: u32, len: u32, alloc: Allocator) Error![]const u8 {
+    std.debug.assert(bitmap.len * 8 >= offset + len);
+
+    if (offset % 8 == 0) {
+        return bitmap[(offset / 8)..(offset / 8 + (len + 7) / 8)];
+    }
+
+    const x = try alloc.alloc(u8, (len + 7) / 8);
+    arrow.bitmap.copy(len, x, 0, bitmap, offset);
+
+    return x;
 }
