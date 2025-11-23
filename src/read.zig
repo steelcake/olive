@@ -771,9 +771,12 @@ fn read_dict_indices(
             return Error.ValidationError;
         }
 
-        const max_idx = std.mem.max(u32, array.values[array.offset..end]);
-        if (max_idx >= dict_len) {
-            return Error.ValidationError;
+        const vals = array.values[array.offset..end];
+        if (vals.len > 0) {
+            const max_idx = std.mem.max(u32, vals);
+            if (max_idx >= dict_len) {
+                return Error.ValidationError;
+            }
         }
     }
 
