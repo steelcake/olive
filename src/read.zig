@@ -45,8 +45,8 @@ pub fn read(params: struct {
     scratch_alloc: Allocator,
     data_section: []const u8,
 }) Error!chunk.Chunk {
-    var decompressor = Decompressor.init();
-    defer decompressor.deinit();
+    var decompressor = try Decompressor.init(params.scratch_alloc);
+    defer decompressor.deinit(params.scratch_alloc);
 
     if (params.header.data_section_size != params.data_section.len) {
         return Error.ValidationError;
@@ -73,36 +73,28 @@ pub fn read(params: struct {
         },
     };
 
-    const tables = try params.alloc.alloc(chunk.Table, params.schema.tables.len);
-
-    if (params.schema.tables.len != params.header.tables.len) {
+    if (params.schema.table_schemas.len != params.header.tables.len) {
         return Error.ValidationError;
     }
-    for (params.schema.tables, params.header.tables, 0..) |table_schema, table_header, table_idx| {
-        if (table_schema.data_types.len != table_header.fields.len) {
+    const tables = try params.alloc.alloc([]const arr.Array, params.schema.table_schemas.len);
+
+    for (params.schema.table_schemas, params.header.tables, 0..) |table_schema, table_header, table_idx| {
+        if (table_schema.field_types.len != table_header.fields.len) {
             return Error.ValidationError;
         }
 
         const fields = try params.alloc.alloc(arr.Array, table_header.fields.len);
 
-        for (table_schema.data_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
-            const dt = if (schema.find_dict_idx(params.schema.dicts, table_idx, field_idx) == null)
-                field_type
-            else
-                DataType{ .u32 = {} };
-
-            fields[field_idx] = try read_array(ctx, dt, field_header);
+        for (table_schema.field_types, table_header.fields, 0..) |field_type, *field_header, field_idx| {
+            fields[field_idx] = try read_array(ctx, field_type, field_header);
         }
 
-        tables[table_idx] = .{
-            .fields = fields,
-            .num_rows = table_header.num_rows,
-        };
+        tables[table_idx] = fields;
     }
 
     return .{
         .tables = tables,
-        .dicts = ctx.dict_ctx,
+        .dict_ctx = ctx.dict_ctx,
         .schema = params.schema,
     };
 }
@@ -133,9 +125,33 @@ fn read_dict_data(
 }
 
 fn check_field_type(field_type: DataType, field_header: *const header.Array) Error!void {
-    const expected: @typeInfo(header.Array).@"union".tag_type.? = switch (field_type) {
+    const expected: header.ArrayTag = switch (field_type) {
         .null => .null,
-        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f16, .f32, .f64, .decimal32, .decimal64, .decimal128, .decimal256, .date32, .date64, .time32, .time64, .timestamp, .interval_year_month, .interval_day_time, .interval_month_day_nano, .duration => .primitive,
+        .i8,
+        .i16,
+        .i32,
+        .i64,
+        .u8,
+        .u16,
+        .u32,
+        .u64,
+        .f16,
+        .f32,
+        .f64,
+        .decimal32,
+        .decimal64,
+        .decimal128,
+        .decimal256,
+        .date32,
+        .date64,
+        .time32,
+        .time64,
+        .timestamp,
+        .interval_year_month,
+        .interval_day_time,
+        .interval_month_day_nano,
+        .duration,
+        => .primitive,
         .binary => .binary,
         .utf8 => .binary,
         .bool => .bool,
@@ -143,11 +159,9 @@ fn check_field_type(field_type: DataType, field_header: *const header.Array) Err
         .struct_ => .struct_,
         .dense_union => .dense_union,
         .sparse_union => .sparse_union,
-        .fixed_size_binary => |bw| {
-            switch (bw) {
-                20, 32 => .u32,
-                else => .fixed_size_binary,
-            }
+        .fixed_size_binary => |bw| switch (bw) {
+            20, 32 => .primitive,
+            else => .fixed_size_binary,
         },
         .fixed_size_list => .fixed_size_list,
         .map => .map,
@@ -162,7 +176,7 @@ fn check_field_type(field_type: DataType, field_header: *const header.Array) Err
         .dict => .dict,
     };
 
-    if (expected != field_header.*) {
+    if (@intFromEnum(expected) != @intFromEnum(field_header.*)) {
         return Error.UnexpectedArrayType;
     }
 }
@@ -201,8 +215,8 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
             .params = dec_params,
             .inner = try read_primitive(i256, ctx, &field_header.primitive),
         } },
-        .date32 => .{ .date32 = .{ .inner = try read_primitive(i32, ctx, &field_header.i32) } },
-        .date64 => .{ .date64 = .{ .inner = try read_primitive(i64, ctx, &field_header.i64) } },
+        .date32 => .{ .date32 = .{ .inner = try read_primitive(i32, ctx, &field_header.primitive) } },
+        .date64 => .{ .date64 = .{ .inner = try read_primitive(i64, ctx, &field_header.primitive) } },
         .time32 => |unit| .{ .time32 = .{
             .unit = unit,
             .inner = try read_primitive(i32, ctx, &field_header.primitive),
@@ -278,7 +292,7 @@ fn read_array(ctx: Context, field_type: DataType, field_header: *const header.Ar
         .dict => |dict_t| .{ .dict = try read_dict(ctx, dict_t.*, &field_header.dict) },
     };
 
-    arrow.validate.validate(&array) catch {
+    arrow.validate.validate_array(&array) catch {
         return Error.ValidationError;
     };
 
@@ -310,7 +324,7 @@ fn read_list_view(
     const array = try read_list(index_t, ctx, inner_t, field_header);
 
     // validate to avoid unsafety when handling the array
-    arrow.validate.validate_list(index_t, &array) catch {
+    arrow.validate.validate_list_array(index_t, &array) catch {
         return Error.ValidationError;
     };
 
@@ -353,7 +367,7 @@ fn read_binary_view(ctx: Context, field_header: *const header.BinaryArray) Error
     const array = try read_binary(.i64, ctx, field_header);
 
     // validate to avoid unsafety when handling the array
-    arrow.validate.validate_binary(.i64, &array) catch {
+    arrow.validate.validate_binary_array(.i64, &array) catch {
         return Error.ValidationError;
     };
 

@@ -30,9 +30,8 @@ pub fn DictFn(comptime W: comptime_int) type {
                 return hash_fixed(W, val);
             }
 
-            pub fn eql(self: Self, a: T, b: T, idx: u32) bool {
+            pub fn eql(self: Self, a: T, b: T) bool {
                 _ = self;
-                _ = idx;
                 inline for (0..W) |i| {
                     if (a[i] != b[i]) {
                         return false;
@@ -59,7 +58,7 @@ pub fn DictFn(comptime W: comptime_int) type {
 
             if (dict.len == 0) {
                 std.debug.assert(array.len == array.null_count);
-                @memset(@as([]u8, data), 0);
+                @memset(@as([]u8, @ptrCast(data)), 0);
             } else {
                 var idx: u32 = 0;
                 while (idx < array.len) : (idx += 1) {
@@ -97,6 +96,8 @@ pub fn DictFn(comptime W: comptime_int) type {
             if (array.len == 0) return;
 
             if (array.null_count > 0) {
+                const validity = array.validity orelse unreachable;
+
                 if (array.null_count == array.len) return;
                 try builder.ensureUnusedCapacity(alloc, array.len - array.null_count);
 
@@ -107,7 +108,8 @@ pub fn DictFn(comptime W: comptime_int) type {
                     fn process(self: @This(), idx: u32) void {
                         const byte_offset = idx * W;
                         self.b.putAssumeCapacity(
-                            self.a.data[byte_offset .. byte_offset + W],
+                            @as([]const T, @ptrCast(self.a.data[byte_offset .. byte_offset + W]))[0],
+                            0,
                         );
                     }
                 };
@@ -119,15 +121,15 @@ pub fn DictFn(comptime W: comptime_int) type {
                         .a = array,
                         .b = builder,
                     },
-                    array.validity,
+                    validity,
                     array.offset,
                     array.len,
                 );
             } else {
                 const data: []const T = @ptrCast(array.data[array.offset * W .. (array.offset + array.len) * W]);
-                try builder.ensureUnusedCapacity(alloc, data.len);
+                try builder.ensureUnusedCapacity(alloc, @intCast(data.len));
                 for (data) |v| {
-                    builder.putAssumeCapacity(v);
+                    builder.putAssumeCapacity(v, 0);
                 }
             }
         }
@@ -171,7 +173,7 @@ pub fn DictFn(comptime W: comptime_int) type {
             noalias builder: *Builder,
             alloc: Allocator,
         ) error{OutOfMemory}![]const T {
-            var elems = try alloc.alloc(T, builder.size());
+            var elems = try alloc.alloc(T, builder.size);
             var iter = builder.keyIterator();
             var idx: u32 = 0;
             while (iter.next()) |v| {
@@ -179,7 +181,7 @@ pub fn DictFn(comptime W: comptime_int) type {
                 idx += 1;
             }
 
-            std.mem.sortUnstable(T, elems, void, less_than_fn);
+            std.mem.sortUnstable(T, elems, {}, less_than_fn);
 
             idx = 0;
             for (elems) |v| {
@@ -247,7 +249,7 @@ fn unpack_table(
 
     var out = try alloc.alloc(arr.Array, table.len);
     for (0..table.len) |idx| {
-        out[idx] = try apply_builders_to_field(
+        out[idx] = try unpack_field(
             ctx,
             &table_schema.field_types[idx],
             &table[idx],
@@ -316,102 +318,118 @@ fn unpack_field(
         .list => |a| {
             var out = field.list;
 
-            out.inner = try unpack_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try unpack_field(
                 ctx,
                 a,
                 out.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .list = out };
         },
         .fixed_size_list => |a| {
             var out = field.fixed_size_list;
 
-            out.inner = try unpack_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try unpack_field(
                 ctx,
                 &a.inner,
                 out.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .fixed_size_list = out };
         },
         .large_list => |a| {
             var out = field.large_list;
 
-            out.inner = try unpack_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try unpack_field(
                 ctx,
                 a,
                 out.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .large_list = out };
         },
         .list_view => |a| {
             var out = field.list_view;
 
-            out.inner = try unpack_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try unpack_field(
                 ctx,
                 a,
                 out.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .list_view = out };
         },
         .large_list_view => |a| {
             var out = field.large_list_view;
 
-            out.inner = try unpack_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try unpack_field(
                 ctx,
                 a,
                 out.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .large_list_view = out };
         },
         .struct_ => |a| {
             var out = field.struct_;
 
-            for (a.field_types, out.field_values) |*ft, *fv| {
-                fv.* = try unpack_field(
+            const field_values = try alloc.alloc(arr.Array, out.field_values.len);
+            for (a.field_types, out.field_values, 0..) |*ft, *fv, idx| {
+                field_values[idx] = try unpack_field(
                     ctx,
                     ft,
                     fv,
                     alloc,
                 );
             }
+            out.field_values = field_values;
 
             return .{ .struct_ = out };
         },
         .dense_union => |a| {
             var out = field.dense_union;
 
-            for (out.inner.children, a.field_types) |*fv, *ft| {
-                fv.* = try unpack_field(
+            const children = try alloc.alloc(arr.Array, out.inner.children.len);
+            for (out.inner.children, a.field_types, 0..) |*fv, *ft, idx| {
+                children[idx] = try unpack_field(
                     ctx,
                     ft,
                     fv,
                     alloc,
                 );
             }
+            out.inner.children = children;
 
             return .{ .dense_union = out };
         },
         .sparse_union => |a| {
             var out = field.sparse_union;
 
-            for (out.inner.children, a.field_types) |*fv, *ft| {
-                fv.* = try unpack_field(
+            const children = try alloc.alloc(arr.Array, out.inner.children.len);
+            for (out.inner.children, a.field_types, 0..) |*fv, *ft, idx| {
+                children[idx] = try unpack_field(
                     ctx,
                     ft,
                     fv,
                     alloc,
                 );
             }
+            out.inner.children = children;
 
             return .{ .sparse_union = out };
         },
@@ -421,43 +439,53 @@ fn unpack_field(
             const field_names = .{ "keys", "values" };
             const field_types = .{ a.key.to_data_type(), a.value };
 
-            const st = DataType{
-                .struct_ = .{
-                    .field_names = &field_names,
-                    .field_types = &field_types,
-                },
+            const struct_t = try alloc.create(arrow.data_type.StructType);
+            struct_t.* = arrow.data_type.StructType{
+                .field_names = &field_names,
+                .field_types = &field_types,
             };
 
-            out.entries = (try unpack_field(
+            const st = DataType{
+                .struct_ = struct_t,
+            };
+
+            const entries = try alloc.create(arr.StructArray);
+            entries.* = (try unpack_field(
                 ctx,
                 &st,
                 &.{ .struct_ = out.entries.* },
                 alloc,
             )).struct_;
+            out.entries = entries;
 
             return .{ .map = out };
         },
         .run_end_encoded => |a| {
             var out = field.run_end_encoded;
 
-            out.values = try unpack_field(
+            const values = try alloc.create(arr.Array);
+            values.* = try unpack_field(
                 ctx,
                 &a.value,
                 out.values,
                 alloc,
             );
+
+            out.values = values;
 
             return .{ .run_end_encoded = out };
         },
         .dict => |a| {
             var out = field.dict;
 
-            out.values = try unpack_field(
+            const values = try alloc.create(arr.Array);
+            values.* = try unpack_field(
                 ctx,
                 &a.value,
                 out.values,
                 alloc,
             );
+            out.values = values;
 
             return .{ .dict = out };
         },
@@ -472,7 +500,7 @@ pub fn encode_chunk(
     tables: []const []const arr.Array,
     context: DictContext,
 } {
-    if (tables.len == 0) return &.{};
+    std.debug.assert(tables.len > 0);
 
     var total_num_rows: u32 = 0;
     for (tables) |t| {
@@ -500,7 +528,7 @@ pub fn encode_chunk(
 
     const tables_o = try alloc.alloc([]const arr.Array, tables.len);
     for (0..tables.len) |idx| {
-        tables_o[idx] = try apply_builders_to_table(tables[idx], alloc);
+        tables_o[idx] = try apply_builders_to_table(builder_ctx, tables[idx], alloc);
     }
 
     return .{
@@ -514,7 +542,7 @@ fn push_table_to_builders(
     table: []const arr.Array,
     alloc: Allocator,
 ) error{OutOfMemory}!void {
-    if (table.len == 0) return &.{};
+    std.debug.assert(table.len > 0);
 
     for (table) |*field| {
         try push_field_to_builders(
@@ -724,7 +752,7 @@ fn apply_builders_to_field(
         .time64,
         .timestamp,
         .duration,
-        => {},
+        => return field.*,
         .fixed_size_binary => |*a| {
             return switch (a.byte_width) {
                 20 => return .{ .u32 = try DictFn20.apply_builder_to_array(
@@ -743,127 +771,154 @@ fn apply_builders_to_field(
         .list => |*a| {
             var out = a.*;
 
-            out.inner = try apply_builders_to_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try apply_builders_to_field(
                 ctx,
                 a.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .list = out };
         },
         .fixed_size_list => |*a| {
             var out = a.*;
 
-            out.inner = try apply_builders_to_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try apply_builders_to_field(
                 ctx,
                 a.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .fixed_size_list = out };
         },
         .large_list => |*a| {
             var out = a.*;
 
-            out.inner = try apply_builders_to_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try apply_builders_to_field(
                 ctx,
                 a.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .large_list = out };
         },
         .list_view => |*a| {
             var out = a.*;
 
-            out.inner = try apply_builders_to_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try apply_builders_to_field(
                 ctx,
                 a.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .list_view = out };
         },
         .large_list_view => |*a| {
             var out = a.*;
 
-            out.inner = try apply_builders_to_field(
+            const inner = try alloc.create(arr.Array);
+            inner.* = try apply_builders_to_field(
                 ctx,
                 a.inner,
                 alloc,
             );
+            out.inner = inner;
 
             return .{ .large_list_view = out };
         },
         .struct_ => |*a| {
             var out = a.*;
 
-            for (out.field_values) |*fv| {
-                fv.* = try apply_builders_to_field(
+            const field_values = try alloc.alloc(arr.Array, out.field_values.len);
+            for (out.field_values, 0..) |*fv, idx| {
+                field_values[idx] = try apply_builders_to_field(
                     ctx,
                     fv,
                     alloc,
                 );
             }
+            out.field_values = field_values;
 
             return .{ .struct_ = out };
         },
         .dense_union => |*a| {
             var out = a.*;
 
-            for (out.inner.children) |*fv| {
-                fv.* = try apply_builders_to_field(
+            const children = try alloc.alloc(arr.Array, out.inner.children.len);
+            for (out.inner.children, 0..) |*fv, idx| {
+                children[idx] = try apply_builders_to_field(
                     ctx,
                     fv,
                     alloc,
                 );
             }
+
+            out.inner.children = children;
 
             return .{ .dense_union = out };
         },
         .sparse_union => |*a| {
             var out = a.*;
 
-            for (out.inner.children) |*fv| {
-                fv.* = try apply_builders_to_field(
+            const children = try alloc.alloc(arr.Array, out.inner.children.len);
+            for (out.inner.children, 0..) |*fv, idx| {
+                children[idx] = try apply_builders_to_field(
                     ctx,
                     fv,
                     alloc,
                 );
             }
 
+            out.inner.children = children;
+
             return .{ .sparse_union = out };
         },
         .map => |*a| {
             var out = a.*;
 
-            out.entries = (try apply_builders_to_field(
+            const entries = try alloc.create(arr.StructArray);
+            entries.* = (try apply_builders_to_field(
                 ctx,
-                &.{ .struct_ = a.entries },
+                &.{ .struct_ = a.entries.* },
                 alloc,
             )).struct_;
+
+            out.entries = entries;
 
             return .{ .map = out };
         },
         .run_end_encoded => |*a| {
             var out = a.*;
 
-            out.values = try apply_builders_to_field(
+            const values = try alloc.create(arr.Array);
+            values.* = try apply_builders_to_field(
                 ctx,
                 a.values,
                 alloc,
             );
+
+            out.values = values;
 
             return .{ .run_end_encoded = out };
         },
         .dict => |*a| {
             var out = a.*;
 
-            out.values = try apply_builders_to_field(
+            const values = try alloc.create(arr.Array);
+            values.* = try apply_builders_to_field(
                 ctx,
                 a.values,
                 alloc,
             );
+
+            out.values = values;
 
             return .{ .dict = out };
         },
@@ -883,4 +938,6 @@ fn copy_validity(
     const out = try alloc.alloc(u8, n_bytes);
 
     arrow.bitmap.copy(len, out, 0, v, offset);
+
+    return out;
 }

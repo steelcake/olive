@@ -19,7 +19,7 @@ const MAX_DEPTH = 8;
 pub fn schema(input: *FuzzInput, alloc: Allocator) Error!Schema {
     const num_tables = (try input.int(u8)) % 10 + 1;
 
-    var prng = Prng.init();
+    var prng = Prng.init(try input.int(u64));
     const rand = prng.random();
 
     const table_names = try fuzzin.allocate([:0]const u8, num_tables, alloc);
@@ -41,7 +41,7 @@ pub fn schema(input: *FuzzInput, alloc: Allocator) Error!Schema {
 pub fn table_schema(input: *FuzzInput, alloc: Allocator) Error!TableSchema {
     const num_fields = (try input.int(u8)) % 10 + 1;
 
-    var prng = Prng.init();
+    var prng = Prng.init(try input.int(u64));
     const rand = prng.random();
 
     const field_names = try fuzzin.allocate([:0]const u8, num_fields, alloc);
@@ -65,7 +65,7 @@ pub fn table_schema(input: *FuzzInput, alloc: Allocator) Error!TableSchema {
 }
 
 pub fn arrow_chunk(sch: *const Schema, input: *FuzzInput, alloc: Allocator) Error![]const []const arr.Array {
-    const tables = try fuzzin.allocate([]const arr.Array, sch.table_names.len);
+    const tables = try fuzzin.allocate([]const arr.Array, sch.table_names.len, alloc);
     for (0..tables.len) |table_idx| {
         tables[table_idx] = try arrow_table(&sch.table_schemas[table_idx], input, alloc);
     }
@@ -76,7 +76,7 @@ pub fn arrow_chunk(sch: *const Schema, input: *FuzzInput, alloc: Allocator) Erro
 }
 
 pub fn arrow_table(sch: *const TableSchema, input: *FuzzInput, alloc: Allocator) Error![]const arr.Array {
-    const fields = try fuzzin.allocate(arr.Array, sch.field_names.len);
+    const fields = try fuzzin.allocate(arr.Array, sch.field_names.len, alloc);
 
     const len = try input.int(u8);
 

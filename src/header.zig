@@ -1,6 +1,22 @@
 const Compression = @import("./compression.zig").Compression;
 
-pub const Array = union(enum) {
+pub const ArrayTag = enum {
+    null,
+    primitive,
+    binary,
+    bool,
+    list,
+    struct_,
+    dense_union,
+    sparse_union,
+    fixed_size_binary,
+    fixed_size_list,
+    map,
+    run_end_encoded,
+    dict,
+};
+
+pub const Array = union(ArrayTag) {
     null: NullArray,
     primitive: PrimitiveArray,
     binary: BinaryArray,

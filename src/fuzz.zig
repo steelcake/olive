@@ -14,7 +14,7 @@ fn fuzz_read(ctx: void, input: *FuzzInput, dbg_alloc: Allocator) fuzzin.Error!vo
 
     var arena = ArenaAllocator.init(dbg_alloc);
     defer arena.deinit();
-    var limited_alloc = fuzzin.LimitedAllocator.init(arena.allocator(), 1 << 20);
+    var limited_alloc = fuzzin.LimitedAllocator.init(arena.allocator(), 1 << 16);
     const alloc = limited_alloc.allocator();
 
     const schema = try olive.fuzz_input.schema(input, alloc);
@@ -42,7 +42,7 @@ fn fuzz_read(ctx: void, input: *FuzzInput, dbg_alloc: Allocator) fuzzin.Error!vo
         }
     }
 
-    const out_tables = try out_chunk.to_arrow(arena.allocator());
+    const out_tables = out_chunk.to_arrow(arena.allocator()) catch unreachable;
 
     for (out_tables) |out_table| {
         for (out_table) |*out_field| {
@@ -118,34 +118,33 @@ fn fuzz_roundtrip(
         defer scratch_arena.deinit();
         const scratch_alloc = scratch_arena.allocator();
 
-        break :read try olive.read.read(.{
+        break :read olive.read.read(.{
             .data_section = data_section,
             .scratch_alloc = scratch_alloc,
             .schema = &schema,
             .alloc = alloc,
             .header = &header,
-        });
+        }) catch unreachable;
     };
 
     std.debug.assert(out_chunk.tables.len == olive_chunk.tables.len);
     for (out_chunk.tables, olive_chunk.tables) |out_table, chunk_table| {
         for (out_table, chunk_table) |*out_field, *chunk_field| {
-            try arrow.validate.validate_array(out_field);
-            try arrow.validate.validate_array(chunk_field);
+            arrow.validate.validate_array(out_field) catch unreachable;
+            arrow.validate.validate_array(chunk_field) catch unreachable;
             arrow.equals.equals(out_field, chunk_field);
         }
     }
 
-    const out_tables = try out_chunk.to_arrow(alloc);
-    const olive_tables = try olive_chunk.to_arrow(alloc);
+    const out_arrow_tables = out_chunk.to_arrow(alloc) catch unreachable;
 
-    std.debug.assert(out_tables.len == olive_tables.len);
-    for (out_tables, olive_tables) |out_table, table| {
+    std.debug.assert(out_arrow_tables.len == arrow_chunk.len);
+    for (out_arrow_tables, arrow_chunk) |out_table, table| {
         std.debug.assert(out_table.len == table.len);
 
         for (out_table, table) |*out_field, *field| {
-            try arrow.validate.validate_array(out_field);
-            try arrow.validate.validate_array(field);
+            arrow.validate.validate_array(out_field) catch unreachable;
+            arrow.validate.validate_array(field) catch unreachable;
             arrow.equals.equals(out_field, field);
         }
     }
@@ -157,6 +156,6 @@ test fuzz_roundtrip {
         []u8,
         data_section_buf,
         fuzz_roundtrip,
-        0,
+        1 << 26,
     );
 }
