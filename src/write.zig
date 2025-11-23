@@ -74,18 +74,22 @@ pub fn write(params: struct {
     const tables = try params.header_alloc.alloc(header.Table, params.chunk.tables.len);
 
     for (params.chunk.tables, 0..) |table, table_idx| {
-        const fields = try params.header_alloc.alloc(header.Array, table.fields.len);
+        const fields = try params.header_alloc.alloc(header.Array, table.len);
 
-        for (table.fields, 0..) |*array, field_idx| {
+        const num_rows = arrow.length.length(&table[0]);
+
+        for (table, 0..) |*array, field_idx| {
+            std.debug.assert(num_rows == arrow.length.length(array));
+
             fields[field_idx] = try write_array(
                 ctx,
                 array,
             );
         }
 
-        tables[table_idx] = .{
+        tables[table_idx] = header.Table{
             .fields = fields,
-            .num_rows = table.num_rows,
+            .num_rows = num_rows,
         };
     }
 
@@ -113,80 +117,80 @@ fn write_array(
 ) Error!header.Array {
     switch (array.*) {
         .null => |*a| return .{ .null = .{ .len = a.len } },
-        .i8 => |*a| return .{ .i8 = try write_primitive_array(
+        .i8 => |*a| return .{ .primitive = try write_primitive_array(
             i8,
             ctx,
             a,
         ) },
-        .i16 => |*a| return .{ .i16 = try write_primitive_array(i16, ctx, a) },
-        .i32 => |*a| return .{ .i32 = try write_primitive_array(i32, ctx, a) },
-        .i64 => |*a| return .{ .i64 = try write_primitive_array(i64, ctx, a) },
-        .u8 => |*a| return .{ .u8 = try write_primitive_array(u8, ctx, a) },
-        .u16 => |*a| return .{ .u16 = try write_primitive_array(u16, ctx, a) },
-        .u32 => |*a| return .{ .u32 = try write_primitive_array(u32, ctx, a) },
-        .u64 => |*a| return .{ .u64 = try write_primitive_array(u64, ctx, a) },
-        .f16 => |*a| return .{ .f16 = try write_primitive_array(f16, ctx, a) },
-        .f32 => |*a| return .{ .f32 = try write_primitive_array(f32, ctx, a) },
-        .f64 => |*a| return .{ .f64 = try write_primitive_array(f64, ctx, a) },
+        .i16 => |*a| return .{ .primitive = try write_primitive_array(i16, ctx, a) },
+        .i32 => |*a| return .{ .primitive = try write_primitive_array(i32, ctx, a) },
+        .i64 => |*a| return .{ .primitive = try write_primitive_array(i64, ctx, a) },
+        .u8 => |*a| return .{ .primitive = try write_primitive_array(u8, ctx, a) },
+        .u16 => |*a| return .{ .primitive = try write_primitive_array(u16, ctx, a) },
+        .u32 => |*a| return .{ .primitive = try write_primitive_array(u32, ctx, a) },
+        .u64 => |*a| return .{ .primitive = try write_primitive_array(u64, ctx, a) },
+        .f16 => |*a| return .{ .primitive = try write_primitive_array(f16, ctx, a) },
+        .f32 => |*a| return .{ .primitive = try write_primitive_array(f32, ctx, a) },
+        .f64 => |*a| return .{ .primitive = try write_primitive_array(f64, ctx, a) },
         .binary => |*a| return .{ .binary = try write_binary_array(.i32, ctx, a) },
-        .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, ctx, a) },
+        .utf8 => |*a| return .{ .binary = try write_binary_array(.i32, ctx, &a.inner) },
         .bool => |*a| return .{ .bool = try write_bool_array(ctx, a) },
-        .decimal32 => |*a| return .{ .i32 = try write_primitive_array(
+        .decimal32 => |*a| return .{ .primitive = try write_primitive_array(
             i32,
             ctx,
             &a.inner,
         ) },
-        .decimal64 => |*a| return .{ .i64 = try write_primitive_array(
+        .decimal64 => |*a| return .{ .primitive = try write_primitive_array(
             i64,
             ctx,
             &a.inner,
         ) },
-        .decimal128 => |*a| return .{ .i128 = try write_primitive_array(
+        .decimal128 => |*a| return .{ .primitive = try write_primitive_array(
             i128,
             ctx,
             &a.inner,
         ) },
-        .decimal256 => |*a| return .{ .i256 = try write_primitive_array(
+        .decimal256 => |*a| return .{ .primitive = try write_primitive_array(
             i256,
             ctx,
             &a.inner,
         ) },
-        .date32 => |*a| return .{ .i32 = try write_primitive_array(
+        .date32 => |*a| return .{ .primitive = try write_primitive_array(
             i32,
             ctx,
             &a.inner,
         ) },
-        .date64 => |*a| return .{ .i64 = try write_primitive_array(
+        .date64 => |*a| return .{ .primitive = try write_primitive_array(
             i64,
             ctx,
             &a.inner,
         ) },
-        .time32 => |*a| return .{ .i32 = try write_primitive_array(
+        .time32 => |*a| return .{ .primitive = try write_primitive_array(
             i32,
             ctx,
             &a.inner,
         ) },
-        .time64 => |*a| return .{ .i64 = try write_primitive_array(
+        .time64 => |*a| return .{ .primitive = try write_primitive_array(
             i64,
             ctx,
             &a.inner,
         ) },
-        .timestamp => |*a| return .{ .i64 = try write_primitive_array(
+        .timestamp => |*a| return .{ .primitive = try write_primitive_array(
             i64,
             ctx,
             &a.inner,
         ) },
-        .interval_year_month => |*a| return .{ .interval_year_month = try write_primitive_array(
+        .interval_year_month => |*a| return .{ .primitive = try write_primitive_array(
             i32,
             ctx,
             &a.inner,
         ) },
-        .interval_day_time => |*a| return .{ .interval_day_time = try write_primitive_array(
+        .interval_day_time => |*a| return .{ .primitive = try write_primitive_array(
             [2]i32,
             ctx,
             &a.inner,
         ) },
-        .interval_month_day_nano => |*a| return .{ .interval_month_day_nano = try write_primitive_array(
+        .interval_month_day_nano => |*a| return .{ .primitive = try write_primitive_array(
             arr.MonthDayNano,
             ctx,
             &a.inner,
@@ -204,13 +208,13 @@ fn write_array(
             a,
         ) },
         .map => |*a| return .{ .map = try write_map_array(ctx, a) },
-        .duration => |*a| return .{ .i64 = try write_primitive_array(
+        .duration => |*a| return .{ .primitive = try write_primitive_array(
             i64,
             ctx,
             &a.inner,
         ) },
         .large_binary => |*a| return .{ .binary = try write_binary_array(.i64, ctx, a) },
-        .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, ctx, a) },
+        .large_utf8 => |*a| return .{ .binary = try write_binary_array(.i64, ctx, &a.inner) },
         .large_list => |*a| return .{ .list = try write_list_array(.i64, ctx, a) },
         .run_end_encoded => |*a| return .{ .run_end_encoded = try write_run_end_encoded_array(ctx, a) },
         .binary_view => |*a| return .{ .binary = try write_binary_view_array(
@@ -271,6 +275,7 @@ fn write_list_view_array(
         .len = array.len,
         .offsets = offsets,
         .validity = validity,
+        .null_count = array.null_count,
     };
 
     return try write_list_array(index_t, ctx, &list_array);
@@ -352,7 +357,7 @@ fn write_dict_array(
         const keys = try ctx.header_alloc.create(header.Array);
         const values = try ctx.header_alloc.create(header.Array);
 
-        keys.* = try write_array(ctx, .{ .flat = .lz4 }, &arrow.slice.slice(array.keys, 0, 0));
+        keys.* = try write_array(ctx, &arrow.slice.slice(array.keys, 0, 0));
         values.* = try write_array(ctx, &arrow.slice.slice(array.values, 0, 0));
 
         return .{
@@ -387,7 +392,7 @@ fn write_dict_array(
     };
 
     const keys = try ctx.header_alloc.create(header.Array);
-    keys.* = try write_array(ctx, .{ .flat = .lz4 }, &keys_arr);
+    keys.* = try write_array(ctx, &keys_arr);
 
     return .{
         .keys = keys,
@@ -404,7 +409,7 @@ fn write_run_end_encoded_array(
     const normalized = try arrow.slice.normalize_run_end_encoded(array, 0, ctx.scratch_alloc);
 
     const run_ends = try ctx.header_alloc.create(header.Array);
-    run_ends.* = try write_array(ctx, .{ .flat = .lz4 }, normalized.run_ends);
+    run_ends.* = try write_array(ctx, normalized.run_ends);
     const values = try ctx.header_alloc.create(header.Array);
     values.* = try write_array(ctx, normalized.values);
 
@@ -488,7 +493,7 @@ fn write_dense_union_array(
 ) Error!header.DenseUnionArray {
     // Do a validation here since this function does some complicated operations
     //  while assuming the array is valid
-    arrow.validate.validate_dense_union(array) catch unreachable;
+    arrow.validate.validate_dense_union_array(array) catch unreachable;
 
     const tids = array.inner.type_ids[array.inner.offset .. array.inner.offset + array.inner.len];
     const type_ids = try write_buffer(ctx, .lz4, @ptrCast(tids), @sizeOf(i8));
@@ -501,7 +506,7 @@ fn write_dense_union_array(
 
         var mm = for (input_offsets, tids) |offset, tid| {
             if (child_tid == tid) {
-                break header.MinMax(i32){ .min = offset, .max = offset };
+                break .{ .min = offset, .max = offset };
             }
         } else {
             sliced_children[child_idx] = arrow.slice.slice(child, 0, 0);
@@ -700,14 +705,14 @@ fn write_binary_view_array(
     var total_size: i64 = 0;
 
     if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+        const validity = array.validity orelse unreachable;
 
         const Closure = struct {
             a: *const arr.BinaryViewArray,
-            tsize: *u32,
+            tsize: *i64,
 
             fn process(self: @This(), idx: u32) void {
-                self.tsize += @as(i64, @intCast(self.a.views[idx].length));
+                self.tsize.* += @as(i64, @intCast(self.a.views[idx].length));
             }
         };
 
@@ -734,23 +739,23 @@ fn write_binary_view_array(
     offsets[0] = 0;
 
     if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
+        const validity = array.validity orelse unreachable;
 
         const Closure = struct {
             a: *const arr.BinaryViewArray,
-            tsize: *u32,
+            of: []i64,
+            d: []u8,
 
             fn process(self: @This(), idx: u32) void {
-                self.tsize += @as(i64, @intCast(self.a.views[idx].length));
                 const s = arrow.get.get_binary_view(
-                    array.buffers.ptr,
-                    array.views.ptr,
+                    self.a.buffers,
+                    self.a.views,
                     idx,
                 );
-                const start_offset = offsets[idx - array.offset];
+                const start_offset = self.of[idx - self.a.offset];
                 const end_offset = start_offset + @as(i64, @intCast(s.len));
-                @memcpy(data[@intCast(start_offset)..@intCast(end_offset)], s);
-                offsets[idx - array.offset + 1] = end_offset;
+                @memcpy(self.d[@intCast(start_offset)..@intCast(end_offset)], s);
+                self.of[idx - self.a.offset + 1] = end_offset;
             }
         };
 
@@ -759,7 +764,8 @@ fn write_binary_view_array(
             Closure.process,
             Closure{
                 .a = array,
-                .tsize = &total_size,
+                .of = offsets,
+                .d = data,
             },
             validity,
             array.offset,
@@ -769,8 +775,8 @@ fn write_binary_view_array(
         var idx = array.offset;
         while (idx < array.offset + array.len) : (idx += 1) {
             const s = arrow.get.get_binary_view(
-                array.buffers.ptr,
-                array.views.ptr,
+                array.buffers,
+                array.views,
                 idx,
             );
             const start_offset = offsets[idx - array.offset];
@@ -793,7 +799,7 @@ fn write_binary_view_array(
     return try write_binary_array(
         .i64,
         ctx,
-        &arr.BinaryArray{
+        &arr.LargeBinaryArray{
             .len = array.len,
             .data = data,
             .offset = 0,

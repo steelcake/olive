@@ -32,7 +32,7 @@ pub const TableSchema = struct {
         }
 
         for (self.field_types, fields) |*dt, *field| {
-            arrow.data_type.check_data_type(dt, field) catch {
+            arrow.data_type.check_data_type(field, dt) catch {
                 return Error.Invalid;
             };
         }

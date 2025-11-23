@@ -371,52 +371,61 @@ fn read_binary_view(ctx: Context, field_header: *const header.BinaryArray) Error
         return Error.ValidationError;
     };
 
-    if (array.data.len > std.math.maxInt(u32)) {
+    if (array.data.len > std.math.maxInt(i32)) {
         return Error.BufferTooBig;
     }
 
-    var buffer_len: u64 = 0;
-    var idx: u32 = array.offset;
+    const views = try ctx.alloc.alloc(arr.BinaryView, array.len);
+
+    var idx = array.offset;
     while (idx < array.offset + array.len) : (idx += 1) {
-        const start = array.offsets.ptr[idx];
-        const end = array.offsets.ptr[idx + 1];
-        const len: u64 = @as(u64, @bitCast(end -% start));
-
-        if (len > 12) {
-            buffer_len +%= len;
+        const start = array.offsets[idx];
+        const end = array.offsets[idx + 1];
+        const val = array.data[@intCast(start)..@intCast(end)];
+        if (val.len <= 12) {
+            var data: [12]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            for (0..val.len) |i| {
+                data[i] = val[i];
+            }
+            const datas: [3]i32 = @bitCast(data);
+            views[idx - array.offset] = arr.BinaryView{
+                .length = @intCast(end - start),
+                .prefix = datas[0],
+                .buffer_idx = datas[1],
+                .offset = datas[2],
+            };
+        } else {
+            const prefix: [4]u8 = .{ val.ptr[0], val.ptr[1], val.ptr[2], val.ptr[3] };
+            views[idx - array.offset] = arr.BinaryView{
+                .length = @intCast(end - start),
+                .prefix = @bitCast(prefix),
+                .buffer_idx = 0,
+                .offset = @intCast(start),
+            };
         }
     }
 
-    var builder = arrow.builder.BinaryViewBuilder.with_capacity(
-        @intCast(buffer_len),
-        array.len,
-        array.null_count > 0,
-        ctx.alloc,
-    ) catch |e| {
-        if (e == error.OutOfMemory) return error.OutOfMemory else unreachable;
+    const validity = if (array.null_count > 0)
+        try maybe_align_bitmap(
+            array.validity orelse unreachable,
+            array.offset,
+            array.len,
+            ctx.alloc,
+        )
+    else
+        null;
+
+    const buffers = try ctx.alloc.alloc([]const u8, 1);
+    buffers[0] = array.data;
+
+    return arr.BinaryViewArray{
+        .len = array.len,
+        .offset = 0,
+        .validity = validity,
+        .views = views,
+        .buffers = buffers,
+        .null_count = array.null_count,
     };
-
-    if (array.null_count > 0) {
-        const validity = (array.validity orelse unreachable).ptr;
-
-        idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_option(arrow.get.get_binary_opt(
-                .i64,
-                array.data.ptr,
-                array.offsets.ptr,
-                validity,
-                idx,
-            )) catch unreachable;
-        }
-    } else {
-        idx = array.offset;
-        while (idx < array.offset + array.len) : (idx += 1) {
-            builder.append_value(arrow.get.get_binary(.i64, array.data.ptr, array.offsets.ptr, idx)) catch unreachable;
-        }
-    }
-
-    return (builder.finish() catch unreachable);
 }
 
 fn read_run_end_encoded(
