@@ -5,31 +5,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const olive = @import("olive");
 const arrow = @import("arrow");
-
-fn fuzz_schema_de(data: []const u8, gpa: Allocator) !void {
-    var arena = ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const sch = olive.schema.Schema.deserialize(data, alloc, 30) catch return;
-    sch.validate() catch return;
-}
-
-test "fuzz schema deserialize" {
-    try FuzzWrap(fuzz_schema_de, 1 << 25).run();
-}
-
-fn fuzz_header_de(data: []const u8, gpa: Allocator) !void {
-    var arena = ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    _ = olive.header.Header.deserialize(data, alloc, 30) catch {};
-}
-
-test "fuzz header deserialize" {
-    try FuzzWrap(fuzz_header_de, 1 << 25).run();
-}
+const fuzzin = @import("fuzzin");
 
 fn fuzz_read(data: []const u8, gpa: Allocator) !void {
     var input = olive.fuzz_input.FuzzInput.init(data);
