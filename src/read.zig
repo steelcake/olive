@@ -771,6 +771,10 @@ fn read_dict_indices(
             return Error.ValidationError;
         }
 
+        if (end > array.values.len) {
+            return Error.ValidationError;
+        }
+
         const vals = array.values[array.offset..end];
         if (vals.len > 0) {
             const max_idx = std.mem.max(u32, vals);
