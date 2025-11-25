@@ -9,7 +9,7 @@ const DataType = arrow.data_type.DataType;
 const schema = @import("./schema.zig");
 
 pub fn hash_fixed(comptime W: comptime_int, input: [W]u8) u64 {
-    return xxhash3_64(0, input);
+    return xxhash3_64(0x876f170be4f1fcb9, input);
 }
 
 pub fn DictFn(comptime W: comptime_int) type {
@@ -32,12 +32,11 @@ pub fn DictFn(comptime W: comptime_int) type {
 
             pub fn eql(self: Self, a: T, b: T) bool {
                 _ = self;
+                var x = true;
                 inline for (0..W) |i| {
-                    if (a[i] != b[i]) {
-                        return false;
-                    }
+                    x &= a[i] == b[i];
                 }
-                return true;
+                return x;
             }
         };
 
@@ -193,12 +192,11 @@ pub fn DictFn(comptime W: comptime_int) type {
         }
 
         pub fn less_than_fn(_: void, l: T, r: T) bool {
+            var x = true;
             inline for (0..W) |idx| {
-                if (l[idx] >= r[idx]) {
-                    return false;
-                }
+                x &= l[idx] < r[idx];
             }
-            return true;
+            return x;
         }
     };
 }
